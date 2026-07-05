@@ -15,10 +15,11 @@ Early. Commands are migrating here **gradually** from smalltalk (`launch`, `init
 
 ## Commands (planned)
 
-- `convoy launch <harness> --identity <id> [--ding] [--permanent] [--persona <path>]` — stand up an agent (was `st launch`).
+- `convoy add <harness> --identity <id> [--ding] [--permanent] [--persona <path>]` — add an agent to the convoy (was `st launch`). It joins the network as a running member.
+- `convoy remove <id>` — remove an agent from the convoy (teardown / decommission). The symmetric partner to `add`.
 - `convoy init` — wire a directory's MCP / hooks (was `st init`).
 - `convoy doctor` — the "will this actually work here?" check: tools installed, config sane, hooks fire, the bus round-trips, an agent can spawn.
-- `convoy up` / `convoy ls` — run + inspect the network.
+- `convoy ls` — list the convoy's members.
 
 ## License
 
