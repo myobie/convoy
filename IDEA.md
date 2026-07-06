@@ -41,7 +41,7 @@ It also **owns `pty gc`** (replacing the launchd gc job for app users). `launchd
   }
   ```
   `LSUIElement=true` in Info.plist → menubar-only (no Dock icon).
-- **No Xcode:** [**Swift Bundler**](https://swiftbundler.dev/) — a layer over Swift Package Manager that turns an SPM executable into a real distributable `.app` bundle via a git-friendly TOML config. Matches Nathan's existing no-Xcode Swift workflow (the nano tools already build via SPM → `.build/release/…`). `codesign` + `notarytool` are CLI tools — the whole pipeline is Xcode-free.
+- **No Xcode:** [**Swift Bundler**](https://swiftbundler.dev/) — a layer over Swift Package Manager that turns an SPM executable into a real distributable `.app` bundle via a git-friendly TOML config. Fits a plain SPM Swift workflow (SPM-built CLIs land in `.build/release/…`, no Xcode project needed). `codesign` + `notarytool` are CLI tools — the whole pipeline is Xcode-free.
 - **TCC caveat (the crux):** for grants to attach *durably*, the app needs (a) a proper `Info.plist` with the usage-description keys, and (b) a **stable signing identity** (Developer ID, or stable ad-hoc) so TCC recognizes it across rebuilds. This is precisely what the headless node binary can't satisfy — and why the grant kept getting lost.
 - **Distribution: a Homebrew cask.** A custom tap (`myobie/homebrew-convoy`) or homebrew-cask: `brew install --cask convoy` copies `Convoy.app` to `/Applications` and can symlink the `convoy` CLI (a cask's `binary` stanza). Casks download → checksum → copy `.app` → symlink CLI → postflight. `convoy app install` can also do the copy directly for non-brew users.
 
