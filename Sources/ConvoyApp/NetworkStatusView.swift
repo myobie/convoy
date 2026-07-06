@@ -6,6 +6,7 @@ import ConvoyKit
 struct NetworkStatusView: View {
     @ObservedObject var model: NetworkModel
     @ObservedObject var keepAwake: KeepAwake
+    @ObservedObject var host: HostController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -60,6 +61,9 @@ struct NetworkStatusView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
+
+            hostSection
+
             Toggle(isOn: Binding(get: { keepAwake.enabled },
                                  set: { _ in keepAwake.toggle() })) {
                 Label("Keep Mac awake", systemImage: "bolt.fill")
@@ -73,6 +77,31 @@ struct NetworkStatusView: View {
                 Button("Quit") { NSApplication.shared.terminate(nil) }
             }
             .font(.caption)
+        }
+    }
+
+    /// Host the configured network under the app (the TCC anchor). Hosting also keeps the Mac
+    /// awake — a hosted network shouldn't be paused by sleep.
+    @ViewBuilder
+    private var hostSection: some View {
+        if host.canHost {
+            Toggle(isOn: Binding(get: { host.isHosting },
+                                 set: { on in
+                                     host.toggle()
+                                     if on { keepAwake.enable() }
+                                 })) {
+                Label(host.isHosting ? "Hosting network" : "Host network",
+                      systemImage: "externaldrive.connected.to.line.below")
+            }
+            .toggleStyle(.switch)
+            .font(.caption)
+        } else {
+            Label("No hosted network (set CONVOY_HOST_DIR)", systemImage: "externaldrive.badge.questionmark")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        if let err = host.lastError {
+            Text(err).font(.caption2).foregroundStyle(.orange).lineLimit(2)
         }
     }
 }

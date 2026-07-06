@@ -10,10 +10,11 @@ import SwiftUI
 struct ConvoyApp: App {
     @StateObject private var model = NetworkModel()
     @StateObject private var keepAwake = KeepAwake()
+    @StateObject private var host = HostController()
 
     var body: some Scene {
         MenuBarExtra {
-            NetworkStatusView(model: model, keepAwake: keepAwake)
+            NetworkStatusView(model: model, keepAwake: keepAwake, host: host)
                 .onAppear { model.start() }
         } label: {
             // Menubar glyph; a filled variant signals "parked agents need attention".
