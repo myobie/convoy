@@ -39,6 +39,16 @@ struct Init: ParsableCommand {
             throw ExitCode.failure
         }
         if !dryRun {
+            // Footgun-proof setup: make sure the base personas are present so `convoy add`/`cos`
+            // resolve role personas without a manual step. Non-fatal.
+            do {
+                if case let .cloned(path) = try Personas.ensureInstalled(log: { Out.line($0) }) {
+                    Out.line("installed personas at \(path)")
+                }
+            } catch {
+                Out.err("personas: \(error) (add/cos will retry)")
+            }
+
             let where_ = dir ?? "the default network"
             Out.line("✓ network ready at \(where_). Add agents with `convoy add <role> --identity <id>\(dir.map { " --network \($0)" } ?? "")`.")
         }

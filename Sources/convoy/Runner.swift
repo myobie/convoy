@@ -7,6 +7,19 @@ import ArgumentParser
 /// stops before a broken agent is ever spawned (AC-1).
 enum Runner {
     static func launch(_ spec: AgentSpec, dryRun: Bool, assumeYes: Bool) throws {
+        // Footgun-proof setup: if this agent needs a role-base persona and the personas repo
+        // isn't present, clone it before we resolve wiring. Real runs only (dry-run touches
+        // nothing). Non-fatal — the preflight still warns if a persona can't be resolved.
+        if !dryRun, spec.personaOverride == nil {
+            do {
+                if case let .cloned(path) = try Personas.ensureInstalled(log: { Out.line("  " + $0) }) {
+                    Out.line("  installed personas at \(path)")
+                }
+            } catch {
+                Out.err("personas: \(error)")
+            }
+        }
+
         let bus = Bus(root: spec.networkRoot)
         let pf = spec.preflight(bus: bus)
 

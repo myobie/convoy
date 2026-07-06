@@ -72,21 +72,14 @@ public struct AgentSpec: Sendable {
         return !id.isEmpty && id.unicodeScalars.allSatisfy { allowed.contains($0) }
     }
 
-    /// Where role-base personas live: `$CONVOY_PERSONAS_DIR`, else the conventional repo path.
-    public static func personasDir() -> String {
-        if let dir = ProcessInfo.processInfo.environment["CONVOY_PERSONAS_DIR"], !dir.isEmpty {
-            return dir
-        }
-        let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
-        return home + "/src/github.com/myobie/personas"
-    }
+    /// Where role-base personas live. Delegates to `Personas` (single source of truth).
+    public static func personasDir() -> String { Personas.dir() }
 
     /// Resolve the persona file to install: explicit override wins; else the role's base file.
     /// Returns `nil` if no override and the base file isn't found (non-fatal → warning).
     public func resolvedPersonaPath() -> String? {
         if let personaOverride { return personaOverride }
-        let candidate = AgentSpec.personasDir() + "/" + role.personaBaseFilename
-        return FileManager.default.fileExists(atPath: candidate) ? candidate : nil
+        return Personas.baseFile(for: role)
     }
 
     // MARK: Validation
