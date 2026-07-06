@@ -23,8 +23,9 @@ The guiding requirement: **it must be impossible to misconfigure an agent.** `co
 - `convoy remove <id> [--purge]` — remove an agent (teardown / decommission). The symmetric partner to `add`.
 - `convoy cos --repo <dir>` — bootstrap a Chief of Staff: create/point-at its private repo, then launch it (correct-by-construction). The CoS runs its own first-run interview on boot.
 - `convoy init [dir]` — create + wire a smalltalk network folder (was `st init`).
-- `convoy doctor` — the "will this actually work here?" check: tools installed, config sane, the bus round-trips.
+- `convoy doctor` — the "will this actually work here?" check: tools installed, config sane, the bus round-trips, personas present.
 - `convoy ls [--live-only]` — list the convoy's members.
+- `convoy personas <status|install>` — the base personas convoy installs for roles. `init`/`add`/`cos` auto-install them if missing (footgun-proof setup); this is explicit control.
 - `convoy app <install|status>` — manage the `Convoy.app` menubar host (non-brew install path).
 
 ## License

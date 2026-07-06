@@ -42,6 +42,13 @@ struct Doctor: ParsableCommand {
             Out.bullet(nil, "using st's default network")
         }
 
+        Out.line("Personas")
+        if Personas.isInstalled() {
+            Out.bullet(true, "base personas installed (\(Personas.dir()))")
+        } else {
+            Out.bullet(nil, "base personas not installed — `convoy personas install` (auto-installed by add/cos)")
+        }
+
         Out.line("macOS host")
         let appInstalled = FileManager.default.fileExists(atPath: "/Applications/Convoy.app")
         Out.bullet(appInstalled ? true : nil,
