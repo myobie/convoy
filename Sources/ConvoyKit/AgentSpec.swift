@@ -35,6 +35,9 @@ public struct AgentSpec: Sendable {
     public let networkRoot: String?
     /// Explicit persona path override. `nil` = resolve the role's base persona.
     public let personaOverride: String?
+    /// The directory to install the agent into (its working dir / repo). `st launch` writes the
+    /// agent's infra (pty.toml, .mcp.json, hooks, session-id) here. `nil` = convoy's cwd.
+    public let workingDir: String?
 
     public init(
         harness: Harness = .claude,
@@ -42,7 +45,8 @@ public struct AgentSpec: Sendable {
         identity: String,
         transport: Transport = .mcp,
         networkRoot: String? = nil,
-        personaOverride: String? = nil
+        personaOverride: String? = nil,
+        workingDir: String? = nil
     ) {
         self.harness = harness
         self.role = role
@@ -50,7 +54,10 @@ public struct AgentSpec: Sendable {
         self.transport = transport
         self.networkRoot = networkRoot
         self.personaOverride = personaOverride
+        self.workingDir = workingDir
     }
+
+    private var cwdURL: URL? { workingDir.map { URL(fileURLWithPath: $0) } }
 
     // MARK: Derivation (correct-by-construction)
 
@@ -121,6 +128,14 @@ public struct AgentSpec: Sendable {
                 "no base persona found for role \"\(role.rawValue)\" in \(AgentSpec.personasDir()) — launching without a persona (set CONVOY_PERSONAS_DIR or pass --persona)")
         }
 
+        // Working directory (where the agent's infra gets written) must exist.
+        if let workingDir {
+            var isDir: ObjCBool = false
+            if !FileManager.default.fileExists(atPath: workingDir, isDirectory: &isDir) || !isDir.boolValue {
+                pf.errors.append("working directory does not exist: \(workingDir)")
+            }
+        }
+
         // Codex ignores permission-mode + is always ding-mode; flag if the user asked for mcp.
         if harness == .codex && transport == .mcp {
             pf.warnings.append("codex has no MCP transport — it always runs ding-mode; ignoring --transport mcp")
@@ -136,6 +151,7 @@ public struct AgentSpec: Sendable {
             ("permanent", permanent ? "yes" : "no"),
             ("persona", resolvedPersonaPath() ?? "(none)"),
             ("network", networkRoot ?? "(default)"),
+            ("directory", workingDir ?? "(current)"),
         ]
         return pf
     }
@@ -170,12 +186,12 @@ public struct AgentSpec: Sendable {
     /// Run `st launch … --dry-run` and return its output — the final wiring check before commit.
     @discardableResult
     public func dryRun() throws -> Shell.Result {
-        try Shell.run("st", stLaunchArgs(dryRun: true), env: launchEnv())
+        try Shell.run("st", stLaunchArgs(dryRun: true), cwd: cwdURL, env: launchEnv())
     }
 
     /// Launch for real. Callers MUST run `preflight(bus:)` and confirm `.ok` first.
     @discardableResult
     public func launch() throws -> Shell.Result {
-        try Shell.run("st", stLaunchArgs(dryRun: false), env: launchEnv(), check: false)
+        try Shell.run("st", stLaunchArgs(dryRun: false), cwd: cwdURL, env: launchEnv(), check: false)
     }
 }
