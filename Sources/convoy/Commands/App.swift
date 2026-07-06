@@ -20,7 +20,7 @@ struct App: ParsableCommand {
             let installed = FileManager.default.fileExists(atPath: "/Applications/Convoy.app")
             Out.bullet(installed, installed ? "Convoy.app installed in /Applications"
                                             : "Convoy.app not installed")
-            let running = (try? Shell.run("pgrep", ["-x", "ConvoyApp"], check: false))?.ok ?? false
+            let running = (try? Shell.run("pgrep", ["-x", "Convoy"], check: false))?.ok ?? false
             Out.bullet(running ? true : nil, running ? "menubar app running" : "menubar app not running")
         }
     }
