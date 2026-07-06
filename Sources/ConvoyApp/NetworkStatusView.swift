@@ -14,27 +14,7 @@ struct NetworkStatusView: View {
 
             Divider()
 
-            if let err = model.lastError {
-                Label(err, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .lineLimit(3)
-            }
-
-            if model.agents.isEmpty {
-                Text("No members on this network yet.\nAdd one with `convoy add <role> --identity <id>`.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(model.agents) { agent in
-                            AgentRow(agent: agent, parked: model.parked.contains { $0.identity == agent.identity })
-                        }
-                    }
-                }
-                .frame(maxHeight: 320)
-            }
+            content
 
             Divider()
             footer
@@ -43,15 +23,62 @@ struct NetworkStatusView: View {
         .frame(width: 300)
     }
 
-    private var header: some View {
-        HStack {
-            Image(systemName: "point.3.connected.trianglepath.dotted")
-            Text("Convoy").font(.headline)
-            Spacer()
-            Text("\(model.liveCount) live")
+    @ViewBuilder
+    private var content: some View {
+        if !model.busReachable, model.lastError != nil {
+            // Bus can't be reached — the actionable case, not just "no members".
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Bus unreachable", systemImage: "bolt.horizontal.circle")
+                    .font(.caption).foregroundStyle(.orange)
+                Text("Can't run `st agents`. Is smalltalk installed and on PATH?")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        } else if model.agents.isEmpty {
+            Text(model.hasLoaded
+                 ? "No members yet.\nAdd one with `convoy add <role> --identity <id>`."
+                 : "Loading…")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(model.agents) { agent in
+                        AgentRow(agent: agent, parked: model.parked.contains { $0.identity == agent.identity })
+                    }
+                }
+            }
+            .frame(maxHeight: 320)
         }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                Text("Convoy").font(.headline)
+                Spacer()
+                if !model.agents.isEmpty {
+                    Text("\(model.liveCount)/\(model.totalCount) live")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            HStack(spacing: 4) {
+                Image(systemName: "circle.grid.cross").font(.system(size: 9))
+                Text(model.networkLabel)
+                Spacer()
+                Text(refreshedLabel)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private var refreshedLabel: String {
+        guard let last = model.lastRefresh else { return "" }
+        let s = Int(Date().timeIntervalSince(last))
+        if s < 2 { return "updated just now" }
+        if s < 60 { return "updated \(s)s ago" }
+        return "updated \(s / 60)m ago"
     }
 
     private var footer: some View {

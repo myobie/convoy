@@ -10,10 +10,24 @@ final class NetworkModel: ObservableObject {
     @Published var agents: [Agent] = []
     @Published var lastError: String?
     @Published var lastRefresh: Date?
+    @Published var hasLoaded = false
 
     private let bus = Bus()
     private var timer: Timer?
     private let interval: TimeInterval = 5
+
+    /// Which network this dashboard watches — the `ST_ROOT` basename, or "default network".
+    var networkLabel: String {
+        guard let root = ProcessInfo.processInfo.environment["ST_ROOT"], !root.isEmpty else {
+            return "default network"
+        }
+        return (root as NSString).lastPathComponent
+    }
+
+    var totalCount: Int { agents.count }
+
+    /// The bus answered at least once and isn't currently erroring.
+    var busReachable: Bool { hasLoaded && lastError == nil }
 
     /// Agents that count as parked: live presence but no activity for a while (stale heartbeat).
     /// Coarse heuristic for the at-a-glance flag; the durable watchdog refines this later.
@@ -53,9 +67,13 @@ final class NetworkModel: ObservableObject {
                     }
                     self.lastError = nil
                     self.lastRefresh = Date()
+                    self.hasLoaded = true
                 }
             } catch {
-                await MainActor.run { self.lastError = "\(error)" }
+                await MainActor.run {
+                    self.lastError = "\(error)"
+                    self.hasLoaded = true
+                }
             }
         }
     }
