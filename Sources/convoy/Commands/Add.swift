@@ -39,6 +39,9 @@ struct Add: ParsableCommand {
     @Option(name: .long, help: "Persona file to install. Defaults to the role's base persona.")
     var persona: String?
 
+    @Option(name: .long, help: "Directory to install the agent into (its working dir). Defaults to the current directory.")
+    var dir: String?
+
     @Option(name: .long, help: "Harness binary: claude (default) or codex.")
     var harness: String = "claude"
 
@@ -67,62 +70,11 @@ struct Add: ParsableCommand {
             identity: identity,
             transport: transport,
             networkRoot: network,
-            personaOverride: persona
+            personaOverride: persona,
+            workingDir: dir
         )
 
-        // Preflight: derive + validate. Fail loud before touching anything.
-        let bus = Bus(root: network)
-        let pf = spec.preflight(bus: bus)
-
-        Out.line("convoy add — derived wiring (correct-by-construction):")
-        for (k, v) in pf.derived {
-            Out.line("  \(k.padding(toLength: 16, withPad: " ", startingAt: 0)) \(v)")
-        }
-        for w in pf.warnings { Out.line("  ! \(w)") }
-
-        guard pf.ok else {
-            Out.line()
-            for e in pf.errors { Out.err(e) }
-            throw ExitCode.failure
-        }
-
-        // Final wiring check: dry-run st launch and surface exactly what it will write.
-        Out.line()
-        Out.line("Preflight (st launch --dry-run):")
-        let dry = try spec.dryRun()
-        let dryText = (dry.stdout + dry.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
-        for l in dryText.split(separator: "\n", omittingEmptySubsequences: false) {
-            Out.line("  " + l)
-        }
-        if !dry.ok {
-            Out.line()
-            Out.err("st launch --dry-run reported a problem — not launching. Resolve the above first.")
-            throw ExitCode.failure
-        }
-
-        if dryRun {
-            Out.line()
-            Out.line("✓ Dry run only. Re-run without --dry-run to launch \(identity).")
-            return
-        }
-
-        // Confirm (unless -y). This is a spawn — outward-facing enough to confirm by default.
-        if !yes {
-            Out.line()
-            print("Launch \(identity) as \(role.rawValue) (\(spec.permissionMode.rawValue))? [y/N] ", terminator: "")
-            guard let answer = readLine(), answer.lowercased() == "y" || answer.lowercased() == "yes" else {
-                Out.line("Aborted.")
-                throw ExitCode.failure
-            }
-        }
-
-        Out.line("Launching \(identity)…")
-        let result = try spec.launch()
-        if !result.stdout.isEmpty { print(result.stdout, terminator: "") }
-        if !result.ok {
-            Out.err("st launch failed: \(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
-            throw ExitCode.failure
-        }
-        Out.line("✓ \(identity) added to the convoy. `convoy ls\(network.map { " --network \($0)" } ?? "")` to see it.")
+        Out.line("convoy add — \(identity)")
+        try Runner.launch(spec, dryRun: dryRun, assumeYes: yes)
     }
 }

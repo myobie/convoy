@@ -18,7 +18,7 @@ struct Convoy: ParsableCommand {
         hooks are all derived from high-level intent and validated before launch.
         """,
         version: "0.1.0",
-        subcommands: [Ls.self, Doctor.self, Init.self, Add.self, Remove.self, App.self],
+        subcommands: [Ls.self, Doctor.self, Init.self, Add.self, Remove.self, Cos.self, App.self],
         defaultSubcommand: Ls.self
     )
 }

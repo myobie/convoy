@@ -21,6 +21,7 @@ The guiding requirement: **it must be impossible to misconfigure an agent.** `co
 
 - `convoy add <role> --identity <id> [--transport mcp|ding] [--network <path>] [--persona <path>] [--dry-run]` — add an agent, correct-by-construction (was `st launch`). Role → permission-mode/persona/posture are **derived**, never hand-set; wiring is dry-run-validated before launch.
 - `convoy remove <id> [--purge]` — remove an agent (teardown / decommission). The symmetric partner to `add`.
+- `convoy cos --repo <dir>` — bootstrap a Chief of Staff: create/point-at its private repo, then launch it (correct-by-construction). The CoS runs its own first-run interview on boot.
 - `convoy init [dir]` — create + wire a smalltalk network folder (was `st init`).
 - `convoy doctor` — the "will this actually work here?" check: tools installed, config sane, the bus round-trips.
 - `convoy ls [--live-only]` — list the convoy's members.
