@@ -1,52 +1,66 @@
-// convoy CLI — hand-rolled argv dispatch (like pty's src/cli.ts). The full surface (add/cos/init/ls/
-// doctor/remove/personas) lands in M4–M6; `up` — the load-bearing host verb — is wired now, with its
-// e2e guardrail (scripts/e2e-convoy-up.sh CONVOY_BIN=./bin/convoy).
+// convoy CLI — hand-rolled argv dispatch (like pty's src/cli.ts). `ls` is the default subcommand.
 
 import { up, type UpOptions } from "./up.ts";
+import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdInit, cmdLs, cmdPersonas, cmdRemove, hasFlag, optValue, positionals } from "./commands.ts";
 
 export async function main(argv: string[]): Promise<void> {
   const cmd = argv[0];
   const rest = argv.slice(1);
+  let code: number;
   switch (cmd) {
-    case "up":
-      process.exit(await cmdUp(rest));
+    case "ls":
+    case undefined: // ls is the default subcommand
+      code = await cmdLs(cmd === undefined ? argv : rest);
       break;
-    case undefined:
+    case "doctor": code = await cmdDoctor(rest); break;
+    case "init": code = await cmdInit(rest); break;
+    case "add": code = await cmdAdd(rest); break;
+    case "remove": code = await cmdRemove(rest); break;
+    case "cos": code = await cmdCos(rest); break;
+    case "up": code = await cmdUp(rest); break;
+    case "personas": code = await cmdPersonas(rest); break;
+    case "app": code = await cmdApp(rest); break;
     case "-h":
     case "--help":
       printHelp();
+      code = 0;
+      break;
+    case "--version":
+      process.stdout.write("0.2.0-ts.0\n");
+      code = 0;
       break;
     default:
-      process.stderr.write(`convoy (TS): '${cmd}' is not ported yet — see notes/TS-PORT-PLAN.md (M4/M6).\n`);
-      process.exit(2);
+      process.stderr.write(`convoy: unknown command "${cmd}". Try \`convoy --help\`.\n`);
+      code = 2;
   }
+  process.exit(code);
 }
 
 async function cmdUp(args: string[]): Promise<number> {
   const opts: UpOptions = {};
-  const positional: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    switch (a) {
-      case "--json": opts.json = true; break;
-      case "--once": opts.once = true; break;
-      case "--keep-sessions": opts.keepSessions = true; break;
-      case "--reconcile-interval": opts.reconcileInterval = Number(args[++i]); break;
-      case "--fast-fail-window": opts.fastFailWindow = Number(args[++i]); break;
-      case "--fast-fail-limit": opts.fastFailLimit = Number(args[++i]); break;
-      default:
-        if (a !== undefined && !a.startsWith("-")) positional.push(a);
-        break;
-    }
-  }
-  opts.network = positional[0];
+  const num = (v: string | null): number | undefined => (v === null ? undefined : Number(v));
+  opts.json = hasFlag(args, "--json");
+  opts.once = hasFlag(args, "--once");
+  opts.keepSessions = hasFlag(args, "--keep-sessions");
+  opts.reconcileInterval = num(optValue(args, "--reconcile-interval"));
+  opts.fastFailWindow = num(optValue(args, "--fast-fail-window"));
+  opts.fastFailLimit = num(optValue(args, "--fast-fail-limit"));
+  opts.network = positionals(args)[0];
   return up(opts);
 }
 
 function printHelp(): void {
   process.stdout.write(
-    "convoy — TypeScript port (in progress; notes/TS-PORT-PLAN.md).\n" +
-      "Wired: convoy up <network> [--reconcile-interval N] [--fast-fail-window N]\n" +
-      "                          [--fast-fail-limit N] [--json] [--once] [--keep-sessions]\n",
+    "convoy — stand up and run your crew of agents (TypeScript).\n\n" +
+      "SUBCOMMANDS:\n" +
+      "  ls (default)   list the convoy's members\n" +
+      "  doctor         check that convoy can run here (tools, bus)\n" +
+      "  init [dir]     create + wire a network (auto-clones personas)\n" +
+      "  add <role>     add an agent (correct-by-construction) [--identity --network --dir --mcp --permanent --dry-run]\n" +
+      "  cos --repo <d> bootstrap a Chief of Staff\n" +
+      "  up <network>   host a network in the foreground (TCC anchor + supervisor + flapping-cap)\n" +
+      "  remove <id>    remove an agent\n" +
+      "  personas <status|install>\n" +
+      "  app <status>\n",
   );
 }

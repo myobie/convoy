@@ -1,0 +1,363 @@
+// convoy CLI command handlers, ported from Sources/convoy/Commands/*.swift + Runner.swift. Each
+// returns an exit code. Small arg helpers keep the hand-rolled parsing consistent (like pty's cli.ts).
+
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { run } from "./exec.ts";
+import { Bus, isLive } from "./bus.ts";
+import { PtyHost } from "./host.ts";
+import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
+import { ROLES, parseRole } from "./role.ts";
+import {
+  launchEnv,
+  preflight,
+  resolvedPersonaPath,
+  stLaunchArgs,
+  type AgentSpec,
+  type Harness,
+  type Transport,
+} from "./agent-spec.ts";
+
+// ---- arg helpers ----
+export function positionals(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a.startsWith("--")) {
+      if (!BOOL_FLAGS.has(a)) i++; // skip the value of a value-option
+    } else if (!a.startsWith("-")) {
+      out.push(a);
+    }
+  }
+  return out;
+}
+const BOOL_FLAGS = new Set(["--dry-run", "--yes", "-y", "--mcp", "--permanent", "--purge", "--json", "--live-only", "--no-channel"]);
+export function optValue(args: string[], name: string): string | null {
+  const i = args.indexOf(name);
+  return i >= 0 && i + 1 < args.length ? args[i + 1]! : null;
+}
+export function hasFlag(args: string[], ...names: string[]): boolean {
+  return names.some((n) => args.includes(n));
+}
+
+function out(s = ""): void {
+  process.stdout.write(`${s}\n`);
+}
+function err(s: string): void {
+  process.stderr.write(`convoy: ${s}\n`);
+}
+function isDir(p: string): boolean {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+function expandTilde(p: string): string {
+  return p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
+}
+async function whichCmd(cmd: string): Promise<string | null> {
+  const r = await run("/usr/bin/env", ["sh", "-c", `command -v ${cmd}`]);
+  return r.ok ? r.stdout.trim() : null;
+}
+
+// ---- the shared launch flow (Runner.launch) ----
+function printDerived(pf: ReturnType<typeof preflight>): void {
+  out("derived wiring (correct-by-construction):");
+  for (const [k, v] of pf.derived) out(`  ${k.padEnd(16)} ${v}`);
+  for (const w of pf.warnings) out(`  ! ${w}`);
+}
+
+async function launchSpec(spec: AgentSpec, o: { dryRun: boolean }): Promise<number> {
+  // Footgun-proof: clone role personas if missing (real runs only, no override).
+  if (!o.dryRun && spec.personaOverride === null) {
+    try {
+      const r = await ensureInstalled((s) => out(`  ${s}`));
+      if (r.kind === "cloned") out(`  installed personas at ${r.path}`);
+    } catch (e) {
+      err(`personas: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  const bus = new Bus(spec.networkRoot);
+  const existing = (await bus.agents()).map((a) => a.identity);
+  const pf = preflight(spec, existing);
+  printDerived(pf);
+  if (!pf.ok) {
+    out();
+    for (const e of pf.errors) err(e);
+    return 1;
+  }
+
+  out();
+  out("preflight (st launch --dry-run):");
+  const dry = await run("st", stLaunchArgs(spec, true), { cwd: spec.workingDir ?? undefined, env: launchEnv(spec) });
+  for (const line of `${dry.stdout}${dry.stderr}`.trim().split("\n")) out(`  ${line}`);
+  if (!dry.ok) {
+    out();
+    err("st launch --dry-run reported a problem — not launching. Resolve the above first.");
+    return 1;
+  }
+
+  if (o.dryRun) {
+    out();
+    out(`✓ Dry run only. Re-run without --dry-run to launch ${spec.identity}.`);
+    return 0;
+  }
+
+  out(`Launching ${spec.identity}…`);
+  const res = await run("st", stLaunchArgs(spec, false), { cwd: spec.workingDir ?? undefined, env: launchEnv(spec) });
+  if (res.stdout) process.stdout.write(res.stdout);
+  if (!res.ok) {
+    err(`st launch failed: ${res.stderr.trim()}`);
+    return 1;
+  }
+  out(`✓ ${spec.identity} is under way. \`convoy ls\` to see it.`);
+  return 0;
+}
+
+function resolveTransport(args: string[]): Transport | null {
+  const raw = hasFlag(args, "--mcp") ? "mcp" : optValue(args, "--transport") ?? "ding";
+  return raw === "mcp" || raw === "ding" ? raw : null;
+}
+
+// ---- commands ----
+export async function cmdDoctor(args: string[]): Promise<number> {
+  const network = optValue(args, "--network");
+  let failures = 0;
+  const bullet = (ok: boolean | null, s: string): void => out(`  ${ok === null ? "•" : ok ? "✓" : "✗"} ${s}`);
+
+  out("Tooling");
+  const st = await whichCmd("st");
+  const pty = await whichCmd("pty");
+  bullet(st !== null, st ? `st on PATH (${st})` : "st NOT on PATH — install smalltalk");
+  if (!st) failures++;
+  bullet(pty !== null, pty ? `pty on PATH (${pty})` : "pty NOT on PATH — sessions can't be managed");
+  if (!pty) failures++;
+
+  out("Bus");
+  const bus = new Bus(network);
+  if (await bus.roundTrips()) {
+    const agents = await bus.agents(true);
+    const live = agents.filter((a) => isLive(a.status)).length;
+    bullet(true, `bus round-trips (${agents.length} members, ${live} live)`);
+  } else {
+    bullet(false, `bus does NOT round-trip — \`st agents --json\` failed on ${network ?? "default network"}`);
+    failures++;
+  }
+
+  out("Personas");
+  bullet(personasInstalled() ? true : null, personasInstalled() ? `base personas installed (${personasDir()})` : "base personas not installed — `convoy personas install` (auto-installed by add/cos)");
+
+  out();
+  if (failures === 0) {
+    out("✓ convoy is ready here.");
+    return 0;
+  }
+  out(`✗ ${failures} blocking issue${failures === 1 ? "" : "s"} — resolve the ✗ lines above.`);
+  return 1;
+}
+
+export async function cmdInit(args: string[]): Promise<number> {
+  const dir = positionals(args)[0];
+  if (dir && !existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+    out(`created ${dir}`);
+  }
+  const stArgs = ["init"];
+  if (dir) stArgs.push(dir);
+  if (hasFlag(args, "--no-channel")) stArgs.push("--no-channel");
+  const r = await run("st", stArgs);
+  if (r.stdout) process.stdout.write(r.stdout);
+  if (!r.ok) {
+    err(`st init failed: ${r.stderr.trim()}`);
+    return 1;
+  }
+  try {
+    const res = await ensureInstalled((s) => out(s));
+    if (res.kind === "cloned") out(`installed personas at ${res.path}`);
+  } catch (e) {
+    err(`personas: ${e instanceof Error ? e.message : String(e)} (add/cos will retry)`);
+  }
+  out(`✓ network ready at ${dir ?? "the default network"}. Add agents with \`convoy add <role> --identity <id>${dir ? ` --network ${dir}` : ""}\`.`);
+  return 0;
+}
+
+export async function cmdPersonas(args: string[]): Promise<number> {
+  const sub = args[0] ?? "status";
+  if (sub === "status") {
+    const dir = personasDir();
+    if (personasInstalled()) {
+      out(`  ✓ personas installed at ${dir}`);
+      for (const role of ROLES) out(`  ${baseFile(role) ? "✓" : "✗"} ${role}.md`);
+    } else {
+      out(`  ✗ personas not installed (expected at ${dir})`);
+      out("  install with `convoy personas install` (or set CONVOY_PERSONAS_DIR).");
+    }
+    return 0;
+  }
+  if (sub === "install") {
+    const r = await ensureInstalled((s) => out(s));
+    out(r.kind === "cloned" ? `✓ installed personas at ${r.path}` : `✓ personas already installed at ${personasDir()}`);
+    return 0;
+  }
+  err(`unknown personas subcommand "${sub}" (status|install)`);
+  return 2;
+}
+
+export async function cmdAdd(args: string[]): Promise<number> {
+  const roleRaw = positionals(args)[0];
+  if (!roleRaw) {
+    err("missing role. Usage: convoy add <role> --identity <id>");
+    return 2;
+  }
+  const role = parseRole(roleRaw);
+  if (!role) {
+    err(`unknown role "${roleRaw}". Valid: ${ROLES.join(", ")}`);
+    return 2;
+  }
+  const identity = optValue(args, "--identity");
+  if (!identity) {
+    err("--identity is required");
+    return 2;
+  }
+  const harnessRaw = (optValue(args, "--harness") ?? "claude").toLowerCase();
+  if (harnessRaw !== "claude" && harnessRaw !== "codex") {
+    err(`unknown harness "${harnessRaw}". Valid: claude, codex`);
+    return 2;
+  }
+  const transport = resolveTransport(args);
+  if (!transport) {
+    err(`unknown transport. Valid: ding, mcp`);
+    return 2;
+  }
+  const spec: AgentSpec = {
+    harness: harnessRaw as Harness,
+    role,
+    identity,
+    transport,
+    networkRoot: optValue(args, "--network"),
+    personaOverride: optValue(args, "--persona"),
+    workingDir: optValue(args, "--dir"),
+    permanentOverride: hasFlag(args, "--permanent") ? true : null,
+  };
+  out(`convoy add — ${identity}`);
+  return launchSpec(spec, { dryRun: hasFlag(args, "--dry-run") });
+}
+
+async function ensureRepo(path: string, identity: string): Promise<void> {
+  if (!existsSync(path)) {
+    mkdirSync(path, { recursive: true });
+    out(`  created ${path}`);
+  }
+  const isGit = (await run("git", ["rev-parse", "--is-inside-work-tree"], { cwd: path })).ok;
+  if (!isGit) {
+    await run("git", ["init", "--quiet"], { cwd: path });
+    out("  git-init'd the repo");
+  }
+  const readme = join(path, "README.md");
+  if (!existsSync(readme)) writeFileSync(readme, `# ${identity}\n\nPrivate Chief-of-Staff repo. Durable state lives here (notes, plans, decisions).\n`);
+}
+
+export async function cmdCos(args: string[]): Promise<number> {
+  const repoArg = optValue(args, "--repo");
+  if (!repoArg) {
+    err("--repo is required");
+    return 2;
+  }
+  const identity = optValue(args, "--identity") ?? "cos";
+  const transport = resolveTransport(args);
+  if (!transport) {
+    err(`unknown transport. Valid: ding, mcp`);
+    return 2;
+  }
+  const absRepo = resolve(expandTilde(repoArg));
+  const dryRun = hasFlag(args, "--dry-run");
+
+  out(`convoy cos — ${identity}`);
+  out(`private repo: ${absRepo}`);
+  if (dryRun) {
+    out(existsSync(absRepo) ? "  repo exists — dry-running the launch against it" : "  would create + git-init the repo here (skipped in --dry-run)");
+  } else {
+    await ensureRepo(absRepo, identity);
+  }
+
+  const spec: AgentSpec = {
+    harness: "claude",
+    role: "chief-of-staff",
+    identity,
+    transport,
+    networkRoot: optValue(args, "--network"),
+    personaOverride: optValue(args, "--persona"),
+    workingDir: absRepo,
+    permanentOverride: null,
+  };
+  const rc = await launchSpec(spec, { dryRun });
+  if (rc === 0 && !dryRun) out("The CoS will run its first-run interview on boot.");
+  return rc;
+}
+
+export async function cmdLs(args: string[]): Promise<number> {
+  const network = optValue(args, "--network");
+  const liveOnly = hasFlag(args, "--live-only");
+  const json = hasFlag(args, "--json");
+  const agents = await new Bus(network).agents(true);
+  const shown = liveOnly ? agents.filter((a) => isLive(a.status)) : agents;
+  if (json) {
+    out(JSON.stringify(shown));
+    return 0;
+  }
+  if (shown.length === 0) {
+    out(`No members${liveOnly ? " live" : ""} on this network.`);
+    return 0;
+  }
+  const nameW = Math.max(8, ...shown.map((a) => a.identity.length));
+  out(`${"IDENTITY".padEnd(nameW)}  STATUS  INBOX`);
+  for (const a of shown) out(`${a.identity.padEnd(nameW)}  ${a.status.padEnd(6)}  ${a.inbox ?? "-"}`);
+  const live = shown.filter((a) => isLive(a.status)).length;
+  out(`\n${shown.length} member${shown.length === 1 ? "" : "s"}, ${live} live.`);
+  return 0;
+}
+
+export async function cmdRemove(args: string[]): Promise<number> {
+  const network = optValue(args, "--network");
+  const identity = positionals(args)[0];
+  if (!identity) {
+    err("missing identity. Usage: convoy remove <id>");
+    return 2;
+  }
+  const members = (await new Bus(network).agents()).map((a) => a.identity);
+  if (!members.includes(identity)) {
+    err(`no agent "${identity}" on this network. \`convoy ls\` to list members.`);
+    return 1;
+  }
+  const host = new PtyHost(network);
+  const sessions = (await host.sessions()).filter((s) => {
+    const dn = s.tags["ptyfile.session"];
+    return s.name === identity || dn === identity || ["claude", "codex", "ding"].some((suf) => `${identity}-${suf}` === dn);
+  });
+  out("convoy remove — plan:");
+  if (sessions.length === 0) out(`  no running pty sessions for ${identity} (already down)`);
+  for (const s of sessions) out(`  stop pty session ${s.name}`);
+  if (hasFlag(args, "--dry-run")) {
+    out("\n✓ Dry run only. Re-run without --dry-run to execute.");
+    return 0;
+  }
+  for (const s of sessions) out((await host.kill(s.name)) ? `✓ stopped ${s.name}` : `• ${s.name} didn't stop cleanly (already exited?)`);
+  out(`✓ ${identity} removed from the convoy.`);
+  return 0;
+}
+
+export async function cmdApp(args: string[]): Promise<number> {
+  const sub = args[0] ?? "status";
+  if (sub === "status") {
+    const installed = existsSync("/Applications/Convoy.app");
+    out(`  ${installed ? "✓" : "✗"} ${installed ? "Convoy.app installed in /Applications" : "Convoy.app not installed"}`);
+    const running = (await run("pgrep", ["-x", "Convoy"])).ok;
+    out(`  ${running ? "✓" : "•"} ${running ? "menubar app running" : "menubar app not running"}`);
+    return 0;
+  }
+  out("convoy app: the macOS app now lives in the convoy-macos repo (see notes/TS-PORT-PLAN.md §6).");
+  return 0;
+}
