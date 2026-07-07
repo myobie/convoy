@@ -63,6 +63,11 @@ final class HostController: ObservableObject {
             return
         }
         try? hostLock.acquire()
+        // NOTE: `pty up`/`pty down` were removed from pty (§3.4-B cutover) — these calls now fail
+        // (graceful: lastError is surfaced). This whole app is moving to the `convoy-macos` repo and
+        // being redesigned to run `convoy up <network>` as its child (the §6.1 "app = Mac always-on
+        // host" model), which replaces this pty up/down hosting. Non-reboot-critical (kitty hosts the
+        // reboot); tracked with the TS-port / convoy-macos split.
         Task.detached {
             let result = try? Shell.run("pty", ["up", dir], check: false)
             await MainActor.run {
