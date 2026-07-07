@@ -97,19 +97,5 @@ export function preflight(s: AgentSpec, existing: string[]): Preflight {
   return { errors, warnings, derived, get ok() { return this.errors.length === 0; } };
 }
 
-/** The exact `st launch` argv this intent derives to (convoy reimplements none of the file-writing). */
-export function stLaunchArgs(s: AgentSpec, dryRun: boolean): string[] {
-  const args = ["launch", s.harness, "--identity", s.identity, "--permission-mode", specPermissionMode(s)];
-  if (s.transport === "ding") args.push("--ding");
-  if (specPermanent(s)) args.push("--permanent");
-  const persona = resolvedPersonaPath(s);
-  if (persona) args.push("--persona", persona);
-  if (dryRun) args.push("--dry-run");
-  return args;
-}
-
-/** Env overlay pinning the target network for the `st launch` call. */
-export function launchEnv(s: AgentSpec): NodeJS.ProcessEnv | undefined {
-  if (s.networkRoot === null) return undefined;
-  return { ...process.env, ST_ROOT: s.networkRoot, PTY_ROOT: `${s.networkRoot}/pty` };
-}
+// (Removed `stLaunchArgs` + `launchEnv` — convoy no longer shells `st launch`. Launch is fully native;
+//  the write-logic + spawn live in src/launch.ts. `st launch` is being deleted from smalltalk.)

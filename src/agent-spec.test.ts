@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isValidIdentity, preflight, specPermanent, specPermissionMode, stLaunchArgs, type AgentSpec } from "./agent-spec.ts";
+import { isValidIdentity, preflight, specPermanent, specPermissionMode, type AgentSpec } from "./agent-spec.ts";
 import type { Role } from "./role.ts";
 
 // Pin an EMPTY personas dir so persona resolution is deterministic (no real worker.md leaking in).
@@ -66,17 +66,6 @@ describe("AgentSpec (ported from AgentSpecTests.swift)", () => {
     const pf = preflight(spec({ harness: "codex", transport: "mcp" }), []);
     expect(Object.fromEntries(pf.derived)["transport"]).toBe("ding");
     expect(pf.warnings.join(" ")).toContain("codex");
-  });
-
-  it("stLaunchArgs derives the exact st launch argv", () => {
-    expect(stLaunchArgs(spec({ role: "worker", identity: "wk1", transport: "ding" }), false)).toEqual([
-      "launch", "claude", "--identity", "wk1", "--permission-mode", "auto", "--ding",
-    ]);
-    const cos = stLaunchArgs(spec({ role: "chief-of-staff", identity: "cos", transport: "ding" }), true);
-    expect(cos).toContain("--permanent");
-    expect(cos).toContain("bypassPermissions");
-    expect(cos.at(-1)).toBe("--dry-run");
-    expect(stLaunchArgs(spec({ personaOverride: "/tmp/p.md" }), false)).toContain("/tmp/p.md");
   });
 
   it("preflight fails loud on invalid identity + duplicate", () => {

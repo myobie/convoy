@@ -188,6 +188,18 @@ your terminal; always confirm the actual message via \`st message ls\` + \`st me
    \`st message archive <filename>\` to clear. Don't leave inbox items unaddressed.
 3. \`st agents --json --enrich\` to see who's around and whether any peers are waiting on you.
 
+## Resume safety — do NOT double-act (important for hosted/respawned agents)
+
+The host (\`convoy up\`) respawns you with \`--resume <sid>\`, so on a restart you come back with your
+PRIOR context. But the boot re-drain (step 2) re-surfaces every inbox item you had not archived yet. If a
+drained item is one your resumed context shows you ALREADY acted on — e.g. a delegation "kick" you
+already delegated — **archive it WITHOUT re-acting.** Re-reading and re-delegating an already-processed
+kick is a double-delegation bug.
+
+Rule: **archive a message the moment you act on it** (not at the end of the task), so a mid-task restart
+never leaves an acted-on item to be reprocessed. On resume, for each un-archived item ask "did I already
+handle this?" first — only act on genuinely new ones.
+
 ## Inbound message handling ([DING] pokes)
 
 New peer messages surface as \`[DING] new smalltalk message: <subject> (from <sender>)\` lines. For each:
