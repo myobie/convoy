@@ -19,5 +19,9 @@
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@myobie/pty": "file:../pty",
+    "smol-toml": "^1.7.0"
   }
 }
