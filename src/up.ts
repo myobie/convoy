@@ -105,9 +105,10 @@ export async function up(opts: UpOptions): Promise<number> {
 
       if (decision.kind === "respawn") {
         state.set(key, decision.tags);
-        host.setTags(s.name, writtenTags(decision.tags));
-        host.removeTag(s.name, TAG.status);
-        const ok = await host.respawn(s);
+        const ok = await host.respawn(s); // pty restart -y — preserves the real command (strips tags)
+        // Re-assert permanence + the counter AFTER the restart (it strips runtime tags) — for pty's
+        // display + so a fresh host still recognizes this session. convoy's own store is authoritative.
+        host.setTags(s.name, { ...writtenTags(decision.tags), strategy: "permanent" });
         emit(
           { type: "respawn", identity: logicalId(s), session: s.name, reason: "exited", attempt: decision.tags.consecutiveFastFails, cap: limit, ok, ts: isoString(now) },
           `[convoy-up] respawn ${logicalId(s)} session=${s.name} reason=exited attempt=${decision.tags.consecutiveFastFails}/${limit}${ok ? "" : " (spawn FAILED)"}`,

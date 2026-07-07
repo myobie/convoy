@@ -128,22 +128,13 @@ export class PtyHost {
     updateTags(name, {}, [key]);
   }
 
-  /** Respawn a gone session IN PLACE via `spawnDaemon` with its stored metadata — the native
-   *  equivalent of the Swift `pty restart -y` seam, and exactly the spec §5.3 respawn primitive. */
+  /** Respawn a gone session IN PLACE via `pty restart -y <name>` — SIGTERM + respawn using the STORED
+   *  metadata.command, which PRESERVES the agent's real command verbatim (pty-claude's guidance).
+   *  Reconstructing it via `spawnDaemon(command, args)` loses it — an agent's `sh -c "… exec claude …"`
+   *  came back a bare shell, failing the capstone's LOOP-CLOSED gate. PTY_ROOT is pinned in the process
+   *  env by the constructor, so the CLI targets the right registry. */
   async respawn(s: SupervisedSession): Promise<boolean> {
-    try {
-      await spawnDaemon({
-        name: s.name,
-        command: s.command,
-        args: s.args,
-        displayCommand: s.command,
-        cwd: s.cwd ?? undefined,
-        tags: { ...s.tags, strategy: "permanent" }, // re-assert permanence (kill strips it)
-      });
-      return true;
-    } catch {
-      return false;
-    }
+    return (await run("pty", ["restart", "-y", s.name])).ok;
   }
 
   /** Stop a session (teardown). Residual `pty kill` shell — the client doesn't export a daemon-kill;
