@@ -9,7 +9,8 @@ struct Init: ParsableCommand {
         abstract: "Create and wire a smalltalk network folder (ST_ROOT, bus layout, hooks)."
     )
 
-    @Argument(help: "Directory to initialize as a network root. Defaults to st's default.")
+    @Argument(help: "Directory to initialize as a network root. Defaults to st's default.",
+              completion: .directory)
     var dir: String?
 
     @Flag(name: .long, help: "Skip channel-mode MCP wiring in the generated network.")

@@ -27,10 +27,11 @@ struct App: ParsableCommand {
 
     struct Install: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Copy Convoy.app to /Applications and symlink the convoy CLI (non-brew path)."
+            abstract: "Copy Convoy.app to /Applications (non-brew install path)."
         )
 
-        @Option(name: .long, help: "Path to a built Convoy.app bundle. Defaults to a nearby build output.")
+        @Option(name: .long, help: "Path to a built Convoy.app bundle. Defaults to a nearby build output.",
+                completion: .directory)
         var bundle: String?
 
         func run() throws {

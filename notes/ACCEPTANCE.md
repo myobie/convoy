@@ -29,8 +29,8 @@ the wiring, correct-by-construction, and validates it before launch.** There is:
 | `ST_AGENT`           | `--identity`        | always set to the identity; never hand-typed |
 | `CLAUDE_PERMISSION_MODE` | `--role`        | **spawner/CoS → `bypassPermissions`**; **worker → `auto`**. Never hand-chosen. |
 | `st.network` tag     | `--network`         | always tagged so the agent is findable on its bus |
-| MCP wiring           | `--transport mcp`   | `.mcp.json` references **`bin/st`** — never `bin/coord` (this was a real bug) |
-| ding sidecar         | `--transport ding`  | ding sidecar installed; no MCP block |
+| MCP wiring           | `--mcp` (opt-in)    | `.mcp.json` references **`bin/st`** (the bus binary) |
+| ding sidecar         | default (ding)      | ding sidecar installed; no MCP block |
 | hooks                | role + network      | session-start boot ritual etc. wired automatically |
 | session-id bootstrap | generated           | handled by convoy; never mis-typed by hand |
 

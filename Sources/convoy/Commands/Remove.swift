@@ -15,7 +15,8 @@ struct Remove: ParsableCommand {
     @Argument(help: "The identity to remove.")
     var identity: String
 
-    @Option(name: .long, help: "Network root (ST_ROOT). Defaults to st's default network.")
+    @Option(name: .long, help: "Network root (ST_ROOT). Defaults to st's default network.",
+            completion: .directory)
     var network: String?
 
     @Flag(name: .long, help: "Also delete the agent's membership dir (inbox/archive) — destroys message history.")

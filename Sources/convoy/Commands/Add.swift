@@ -9,7 +9,7 @@ import Foundation
 /// only launches if the wiring is coherent. No hand-authored pty.toml; no way to fumble an env var.
 struct Add: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Add an agent to the convoy (correct-by-construction; was `st launch`).",
+        abstract: "Add an agent to the convoy (correct-by-construction wiring).",
         discussion: """
         Roles map to a fixed, reviewable wiring — you never hand-set the permission mode or ENV:
           chief-of-staff (cos) → bypassPermissions, permanent (spawner)
@@ -17,32 +17,42 @@ struct Add: ParsableCommand {
           technical-manager    → bypassPermissions            (spawner)
           worker               → auto                         (worker)
 
+        Transport is ding-only by default (no MCP); pass --mcp to opt into MCP wiring.
+
         Examples:
-          convoy add cos --identity cos
-          convoy add worker --identity build-wk --transport ding
+          convoy add cos --identity cos                               # ding-only (default)
+          convoy add worker --identity build-wk --mcp                 # opt into MCP wiring
           convoy add supervisor --identity sup --network ~/nets/demo --dry-run
         """
     )
 
-    @Argument(help: "Role: chief-of-staff|cos, supervisor, worker, technical-manager|tm.")
+    @Argument(help: "Role: chief-of-staff|cos, supervisor, worker, technical-manager|tm.",
+              completion: .list(["chief-of-staff", "cos", "supervisor", "sup", "worker", "wk", "technical-manager", "tm"]))
     var role: String
 
     @Option(name: .long, help: "The agent's identity (ST_AGENT is derived from this — never hand-set).")
     var identity: String
 
-    @Option(name: .long, help: "Transport: mcp (default) or ding.")
-    var transport: String = "mcp"
+    @Option(name: .long, help: "Transport: ding (default) or mcp. MCP is opt-in — prefer --mcp.",
+            completion: .list(["ding", "mcp"]))
+    var transport: String = "ding"
 
-    @Option(name: .long, help: "Network root (ST_ROOT). Defaults to st's default network.")
+    @Flag(name: .long, help: "Opt into MCP wiring (shorthand for --transport mcp; ding is the default).")
+    var mcp = false
+
+    @Option(name: .long, help: "Network root (ST_ROOT). Defaults to st's default network.",
+            completion: .directory)
     var network: String?
 
-    @Option(name: .long, help: "Persona file to install. Defaults to the role's base persona.")
+    @Option(name: .long, help: "Persona file to install. Defaults to the role's base persona.",
+            completion: .file())
     var persona: String?
 
-    @Option(name: .long, help: "Directory to install the agent into (its working dir). Defaults to the current directory.")
+    @Option(name: .long, help: "Directory to install the agent into (its working dir). Defaults to the current directory.",
+            completion: .directory)
     var dir: String?
 
-    @Option(name: .long, help: "Harness binary: claude (default) or codex.")
+    @Option(name: .long, help: "Harness binary: claude (default) or codex.", completion: .list(["claude", "codex"]))
     var harness: String = "claude"
 
     @Flag(name: .long, help: "Validate + show the derived wiring and dry-run, but don't launch.")
@@ -60,8 +70,10 @@ struct Add: ParsableCommand {
         guard let harness = Harness(rawValue: self.harness.lowercased()) else {
             throw ConvoyError("unknown harness \"\(self.harness)\". Valid: claude, codex")
         }
-        guard let transport = Transport(rawValue: self.transport.lowercased()) else {
-            throw ConvoyError("unknown transport \"\(self.transport)\". Valid: mcp, ding")
+        // MCP is opt-in: `--mcp` forces MCP; otherwise the default is ding.
+        let transportRaw = mcp ? "mcp" : self.transport
+        guard let transport = Transport(rawValue: transportRaw.lowercased()) else {
+            throw ConvoyError("unknown transport \"\(self.transport)\". Valid: ding, mcp")
         }
 
         let spec = AgentSpec(

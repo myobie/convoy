@@ -13,7 +13,7 @@ struct Ls: ParsableCommand {
     @Flag(name: .long, help: "Only show live members (available/busy/away/dnd).")
     var liveOnly = false
 
-    @Flag(name: .long, help: "Emit raw JSON (passthrough of `st agents --json --enrich`).")
+    @Flag(name: .long, help: "Emit the member list as JSON (convoy's enriched schema; respects --live-only).")
     var json = false
 
     func run() throws {
