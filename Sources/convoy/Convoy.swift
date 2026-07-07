@@ -25,7 +25,8 @@ struct Convoy: ParsableCommand {
 
 /// Options shared by commands that operate against a specific network.
 struct NetworkOptions: ParsableArguments {
-    @Option(name: .long, help: "Network root (ST_ROOT). Defaults to st's default network.")
+    @Option(name: .long, help: "Network root (ST_ROOT). Defaults to st's default network.",
+            completion: .directory)
     var network: String?
 
     var bus: Bus { Bus(root: network) }

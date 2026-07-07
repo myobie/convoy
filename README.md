@@ -19,14 +19,36 @@ The guiding requirement: **it must be impossible to misconfigure an agent.** `co
 
 ## Commands
 
-- `convoy add <role> --identity <id> [--transport mcp|ding] [--network <path>] [--persona <path>] [--dry-run]` — add an agent, correct-by-construction (was `st launch`). Role → permission-mode/persona/posture are **derived**, never hand-set; wiring is dry-run-validated before launch.
+- `convoy add <role> --identity <id> [--mcp] [--network <path>] [--persona <path>] [--dry-run]` — add an agent, correct-by-construction. **Ding-only by default** (no MCP); `--mcp` opts into MCP wiring. Role → permission-mode/persona/posture are **derived**, never hand-set; wiring is dry-run-validated before launch.
 - `convoy remove <id> [--purge]` — remove an agent (teardown / decommission). The symmetric partner to `add`.
 - `convoy cos --repo <dir>` — bootstrap a Chief of Staff: create/point-at its private repo, then launch it (correct-by-construction). The CoS runs its own first-run interview on boot.
-- `convoy init [dir]` — create + wire a smalltalk network folder (was `st init`).
+- `convoy init [dir]` — create + wire a smalltalk network folder (ST_ROOT, bus layout, hooks).
 - `convoy doctor` — the "will this actually work here?" check: tools installed, config sane, the bus round-trips, personas present.
 - `convoy ls [--live-only]` — list the convoy's members.
 - `convoy personas <status|install>` — the base personas convoy installs for roles. `init`/`add`/`cos` auto-install them if missing (footgun-proof setup); this is explicit control.
 - `convoy app <install|status>` — manage the `Convoy.app` menubar host (non-brew install path).
+
+## Operating
+
+- [Driving your convoy remotely](docs/remote-control.md) — steer any member (especially your CoS) from
+  your phone or a browser via Claude Code Remote Control, and the restart gotcha for a hosted network.
+
+## Shell completions
+
+convoy generates completion scripts for bash, zsh, and fish — with value completion for
+roles (`chief-of-staff`, `worker`, …), transports (`mcp`/`ding`), harnesses (`claude`/`codex`),
+and directory/file completion for `--network`, `--dir`, `--repo`, and `--persona`.
+
+```sh
+# zsh — write to a dir on your $fpath, then restart your shell
+convoy --generate-completion-script zsh > ~/.zsh/completions/_convoy
+
+# bash — source it from your ~/.bashrc
+convoy --generate-completion-script bash > ~/.local/share/bash-completion/completions/convoy
+
+# fish
+convoy --generate-completion-script fish > ~/.config/fish/completions/convoy.fish
+```
 
 ## License
 

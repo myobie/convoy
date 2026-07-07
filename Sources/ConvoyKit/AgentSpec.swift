@@ -65,7 +65,7 @@ public struct AgentSpec: Sendable {
     public var permanent: Bool { role.permanent }
 
     /// Valid identity shape: lowercase alnum plus `. _ -`, starting alnum. Matches the live
-    /// network's naming (e.g. `convoy-claude`, `coord-claude.bak`).
+    /// network's naming (e.g. `convoy-claude`, `app-web-claude`, `build-wk.2`).
     public static func isValidIdentity(_ id: String) -> Bool {
         guard let first = id.first, first.isLetter || first.isNumber else { return false }
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789._-")

@@ -24,17 +24,24 @@ struct Cos: ParsableCommand {
     @Option(name: .long, help: "The CoS identity. Defaults to \"cos\".")
     var identity: String = "cos"
 
-    @Option(name: .long, help: "The CoS's private repo directory (created if missing).")
+    @Option(name: .long, help: "The CoS's private repo directory (created if missing).",
+            completion: .directory)
     var repo: String
 
-    @Option(name: .long, help: "Network root (ST_ROOT). Defaults to st's default network.")
+    @Option(name: .long, help: "Network root (ST_ROOT). Defaults to st's default network.",
+            completion: .directory)
     var network: String?
 
-    @Option(name: .long, help: "Persona file. Defaults to the chief-of-staff base persona.")
+    @Option(name: .long, help: "Persona file. Defaults to the chief-of-staff base persona.",
+            completion: .file())
     var persona: String?
 
-    @Option(name: .long, help: "Transport: mcp (default) or ding.")
-    var transport: String = "mcp"
+    @Option(name: .long, help: "Transport: ding (default) or mcp. MCP is opt-in — prefer --mcp.",
+            completion: .list(["ding", "mcp"]))
+    var transport: String = "ding"
+
+    @Flag(name: .long, help: "Opt into MCP wiring (shorthand for --transport mcp; ding is the default).")
+    var mcp = false
 
     @Flag(name: .long, help: "Show what would happen; touch nothing.")
     var dryRun = false
@@ -43,8 +50,10 @@ struct Cos: ParsableCommand {
     var yes = false
 
     func run() throws {
-        guard let transport = Transport(rawValue: transport.lowercased()) else {
-            throw ConvoyError("unknown transport \"\(self.transport)\". Valid: mcp, ding")
+        // MCP is opt-in: `--mcp` forces MCP; otherwise the default is ding.
+        let transportRaw = mcp ? "mcp" : self.transport
+        guard let transport = Transport(rawValue: transportRaw.lowercased()) else {
+            throw ConvoyError("unknown transport \"\(self.transport)\". Valid: ding, mcp")
         }
         let repoPath = (repo as NSString).expandingTildeInPath
         let absRepo = URL(fileURLWithPath: repoPath).standardizedFileURL.path

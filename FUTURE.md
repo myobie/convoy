@@ -18,3 +18,11 @@ Captured for later — **not** part of v0 (CLI + app + install story). Here so t
 - **App → its own repo** — extract `Convoy.app` to a separate repo so the CLI repo stays clean for
   Linux/server users. v0 keeps the monorepo but is built split-ready (`ConvoyApp` couples to the CLI
   only through `ConvoyKit`).
+- **Worktree launch: detect/repair `core.bare` inheritance** — when convoy launches an agent into a
+  linked worktree of a **bare** repo (the megarepo substrate), the worktree inherits `core.bare=true`
+  from the shared config; with `extensions.worktreeConfig` on, git then refuses all work-tree ops and
+  the agent dies on its **first commit** (`fatal: this operation must be run in a work tree`). The
+  launch path (or a `convoy doctor` check) should detect this and repair it per-worktree
+  (`git -C <wt> config --worktree core.bare false`) so a launched agent gets a functional worktree.
+  Acceptance test: st-evals `cells/weird-git-setup` (found by evals-claude). Pairs with the
+  megarepo/worktree-per-agent substrate above.
