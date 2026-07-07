@@ -6,18 +6,11 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { run } from "./exec.ts";
 import { Bus, isLive } from "./bus.ts";
-import { PtyHost, spawnFromPtyFile } from "./host.ts";
+import { PtyHost } from "./host.ts";
+import { nativeLaunch } from "./launch.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
-import {
-  launchEnv,
-  preflight,
-  resolvedPersonaPath,
-  stLaunchArgs,
-  type AgentSpec,
-  type Harness,
-  type Transport,
-} from "./agent-spec.ts";
+import { preflight, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
 
 // ---- arg helpers ----
 export function positionals(args: string[]): string[] {
@@ -80,23 +73,12 @@ async function launchSpec(spec: AgentSpec, o: { dryRun: boolean }): Promise<numb
     }
   }
 
-  const bus = new Bus(spec.networkRoot);
-  const existing = (await bus.agents()).map((a) => a.identity);
+  const existing = (await new Bus(spec.networkRoot).agents()).map((a) => a.identity);
   const pf = preflight(spec, existing);
   printDerived(pf);
   if (!pf.ok) {
     out();
     for (const e of pf.errors) err(e);
-    return 1;
-  }
-
-  out();
-  out("preflight (st launch --dry-run):");
-  const dry = await run("st", stLaunchArgs(spec, true), { cwd: spec.workingDir ?? undefined, env: launchEnv(spec) });
-  for (const line of `${dry.stdout}${dry.stderr}`.trim().split("\n")) out(`  ${line}`);
-  if (!dry.ok) {
-    out();
-    err("st launch --dry-run reported a problem — not launching. Resolve the above first.");
     return 1;
   }
 
@@ -107,20 +89,11 @@ async function launchSpec(spec: AgentSpec, o: { dryRun: boolean }): Promise<numb
   }
 
   out(`Launching ${spec.identity}…`);
-  // st launch writes the wiring (pty.toml / persona / ding-bus). `--fresh` skips the session-id
-  // bootstrap (`claude --print` needs stdin → hangs in a non-interactive shell-out); stdin is closed
-  // for safety. Its OWN pty registration no-ops post-cutover, so convoy owns the spawn (below).
-  const wire = await run("st", [...stLaunchArgs(spec, false), "--fresh"], { cwd: spec.workingDir ?? undefined, env: launchEnv(spec), input: "" });
-  if (wire.stdout) process.stdout.write(wire.stdout);
-  if (!wire.ok) {
-    err(`st launch (wiring) failed: ${wire.stderr.trim()}`);
-    return 1;
-  }
-  const dir = spec.workingDir ?? process.cwd();
-  const { spawned, failed } = await spawnFromPtyFile(dir, spec.networkRoot);
+  // Native launch — convoy writes ALL the wiring + spawns the sessions itself (no st launch shell).
+  const { spawned, failed } = await nativeLaunch(spec);
   for (const f of failed) err(`session ${f} failed to spawn`);
   if (spawned.length === 0) {
-    err(`no session spawned for ${spec.identity} (expected pty.toml at ${dir}/pty.toml)`);
+    err(`no session spawned for ${spec.identity}`);
     return 1;
   }
   out(`✓ ${spec.identity} is under way (${spawned.join(", ")}). \`convoy ls\` to see it.`);
