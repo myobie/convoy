@@ -55,6 +55,9 @@ struct Add: ParsableCommand {
     @Option(name: .long, help: "Harness binary: claude (default) or codex.", completion: .list(["claude", "codex"]))
     var harness: String = "claude"
 
+    @Flag(name: .long, help: "Force always-on: the host (convoy up) respawns this agent if it dies. Required for any long-lived agent — only the CoS is permanent by role.")
+    var permanent = false
+
     @Flag(name: .long, help: "Validate + show the derived wiring and dry-run, but don't launch.")
     var dryRun = false
 
@@ -83,7 +86,9 @@ struct Add: ParsableCommand {
             transport: transport,
             networkRoot: network,
             personaOverride: persona,
-            workingDir: dir
+            workingDir: dir,
+            // Opt-in override only — never force-OFF the role default (the CoS stays permanent).
+            permanentOverride: permanent ? true : nil
         )
 
         Out.line("convoy add — \(identity)")

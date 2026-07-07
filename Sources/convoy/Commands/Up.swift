@@ -58,10 +58,15 @@ struct Up: ParsableCommand {
 
         let root = network ?? Up.defaultRoot()
         let host = PtyHost(root: network)
-        let pidPath = root + "/convoy.pid"
 
-        try acquirePidLock(pidPath, root: root)
-        defer { releasePidLock(pidPath) }
+        // Single-owner guard (shared with the menubar app via HostLock): two hosts on one network
+        // would double-spawn every agent, so refuse with a clear, actionable warning.
+        let lock = HostLock(root: root)
+        if let owner = lock.liveOwner() {
+            throw ConvoyError("convoy up: " + lock.busyWarning(owner: owner))
+        }
+        try lock.acquire()
+        defer { lock.release() }
 
         signal(SIGINT, convoyUpHandleSignal)
         signal(SIGTERM, convoyUpHandleSignal)
@@ -112,8 +117,8 @@ struct Up: ParsableCommand {
                 prior.status = nil
                 prior.consecutiveFastFails = 0
                 state[key] = prior
-                emit(["type": "reset", "identity": s.label, "session": s.name, "reason": "manual", "ts": StrategyTags.isoString(now)],
-                     human: "[convoy-up] reset \(s.label) session=\(s.name) — operator cleared strategy.status; retrying.")
+                emit(["type": "reset", "identity": s.logicalId, "session": s.name, "reason": "manual", "ts": StrategyTags.isoString(now)],
+                     human: "[convoy-up] reset \(s.logicalId) session=\(s.name) — operator cleared strategy.status; retrying.")
             }
 
             let window = FlappingCap.effectiveWindow(tag: prior.fastFailWindowOverride, cliGlobal: fastFailWindow)
@@ -138,16 +143,16 @@ struct Up: ParsableCommand {
                 host.setTags(s.name, ["strategy": "permanent"])
                 let ok = host.respawn(s.name)
                 emit([
-                    "type": "respawn", "identity": s.label, "session": s.name,
+                    "type": "respawn", "identity": s.logicalId, "session": s.name,
                     "reason": "exited", "attempt": newTags.consecutiveFastFails, "cap": limit,
                     "ok": ok, "ts": StrategyTags.isoString(now),
-                ], human: "[convoy-up] respawn \(s.label) session=\(s.name) reason=exited attempt=\(newTags.consecutiveFastFails)/\(limit)\(ok ? "" : " (spawn FAILED)")")
+                ], human: "[convoy-up] respawn \(s.logicalId) session=\(s.name) reason=exited attempt=\(newTags.consecutiveFastFails)/\(limit)\(ok ? "" : " (spawn FAILED)")")
 
             case let .flap(newTags, event):
                 state[key] = newTags
                 host.setTags(s.name, newTags.writtenTags()) // strategy.status=flapping for pty's display
                 emit(event.jsonObject(),
-                     human: "[convoy-up] flapping \(s.label) session=\(s.name) — parked after \(event.counter) fast fails (cap \(event.limit)/\(event.window)s). `pty tag \(s.name) --rm strategy.status` to retry.")
+                     human: "[convoy-up] flapping \(s.logicalId) session=\(s.name) — parked after \(event.counter) fast fails (cap \(event.limit)/\(event.window)s). `pty tag \(s.name) --rm strategy.status` to retry.")
             }
         }
     }
@@ -162,28 +167,6 @@ struct Up: ParsableCommand {
         for name in supervised where host.kill(name) { stopped += 1 }
         emit(["type": "teardown", "stopped": stopped],
              human: "[convoy-up] stopped host; tore down \(stopped) session(s).")
-    }
-
-    // MARK: pid lock (one convoy per network — <root>/convoy.pid)
-
-    private func acquirePidLock(_ path: String, root: String) throws {
-        if let raw = try? String(contentsOfFile: path, encoding: .utf8),
-           let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
-            if pid != getpid() && kill(pid, 0) == 0 {
-                throw ConvoyError("a convoy is already hosting \(root) (pid \(pid) — \(path)). Stop it first, or remove the stale pid file.")
-            }
-        }
-        // Ensure the root exists before writing the lock.
-        try? FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
-        try String(getpid()).write(toFile: path, atomically: true, encoding: .utf8)
-    }
-
-    private func releasePidLock(_ path: String) {
-        // Only remove the lock if it's still ours.
-        if let raw = try? String(contentsOfFile: path, encoding: .utf8),
-           Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)) == getpid() {
-            try? FileManager.default.removeItem(atPath: path)
-        }
     }
 
     // MARK: helpers

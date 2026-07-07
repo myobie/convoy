@@ -38,6 +38,9 @@ public struct AgentSpec: Sendable {
     /// The directory to install the agent into (its working dir / repo). `st launch` writes the
     /// agent's infra (pty.toml, .mcp.json, hooks, session-id) here. `nil` = convoy's cwd.
     public let workingDir: String?
+    /// Force always-on (permanent). `nil` = derive from role (only the CoS is permanent). `true`
+    /// overrides the role so `convoy up` respawns this agent — required for long-lived specialists.
+    public let permanentOverride: Bool?
 
     public init(
         harness: Harness = .claude,
@@ -46,7 +49,8 @@ public struct AgentSpec: Sendable {
         transport: Transport = .mcp,
         networkRoot: String? = nil,
         personaOverride: String? = nil,
-        workingDir: String? = nil
+        workingDir: String? = nil,
+        permanentOverride: Bool? = nil
     ) {
         self.harness = harness
         self.role = role
@@ -55,6 +59,7 @@ public struct AgentSpec: Sendable {
         self.networkRoot = networkRoot
         self.personaOverride = personaOverride
         self.workingDir = workingDir
+        self.permanentOverride = permanentOverride
     }
 
     private var cwdURL: URL? { workingDir.map { URL(fileURLWithPath: $0) } }
@@ -62,7 +67,10 @@ public struct AgentSpec: Sendable {
     // MARK: Derivation (correct-by-construction)
 
     public var permissionMode: PermissionMode { role.permissionMode }
-    public var permanent: Bool { role.permanent }
+    /// Always-on posture: an explicit `--permanent` override wins; otherwise derived from role
+    /// (only the CoS is permanent). `convoy up` respawns permanent sessions, so every long-lived
+    /// agent in a hosted network must be permanent.
+    public var permanent: Bool { permanentOverride ?? role.permanent }
 
     /// Valid identity shape: lowercase alnum plus `. _ -`, starting alnum. Matches the live
     /// network's naming (e.g. `convoy-claude`, `app-web-claude`, `build-wk.2`).

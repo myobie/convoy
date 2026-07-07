@@ -20,6 +20,17 @@ final class HostController: ObservableObject {
 
     private let defaultsKey = "convoy.hostedDir"
 
+    /// The network root whose single-owner lock this app shares with `convoy up` (CLI). Derived from
+    /// CONVOY_HOST_NETWORK, else ST_ROOT, else st's default — so the CLI and the app guard the SAME
+    /// `<root>/convoy.pid` and can never both host one network (which would double-spawn every agent).
+    private var networkRoot: String {
+        let env = ProcessInfo.processInfo.environment
+        if let r = env["CONVOY_HOST_NETWORK"], !r.isEmpty { return r }
+        if let r = env["ST_ROOT"], !r.isEmpty { return r }
+        return (env["HOME"] ?? NSHomeDirectory()) + "/.local/state/smalltalk"
+    }
+    private var hostLock: HostLock { HostLock(root: networkRoot) }
+
     init() {
         if let env = ProcessInfo.processInfo.environment["CONVOY_HOST_DIR"], !env.isEmpty {
             hostedDir = env
@@ -45,6 +56,13 @@ final class HostController: ObservableObject {
             lastError = "No hosted directory set — set CONVOY_HOST_DIR to a folder with a pty.toml."
             return
         }
+        // Symmetric single-owner guard with `convoy up` (CLI): if another convoy already hosts this
+        // network, refuse with the SAME clear warning rather than double-spawn every agent.
+        if let owner = hostLock.liveOwner() {
+            lastError = hostLock.busyWarning(owner: owner)
+            return
+        }
+        try? hostLock.acquire()
         Task.detached {
             let result = try? Shell.run("pty", ["up", dir], check: false)
             await MainActor.run {
@@ -52,6 +70,7 @@ final class HostController: ObservableObject {
                     self.isHosting = true
                     self.lastError = nil
                 } else {
+                    self.hostLock.release() // didn't actually host → drop the lock
                     self.lastError = result?.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                         ?? "pty up failed"
                 }
@@ -64,7 +83,10 @@ final class HostController: ObservableObject {
         guard let dir = hostedDir, !dir.isEmpty else { return }
         Task.detached {
             _ = try? Shell.run("pty", ["down", dir], check: false)
-            await MainActor.run { self.isHosting = false }
+            await MainActor.run {
+                self.hostLock.release()
+                self.isHosting = false
+            }
         }
     }
 

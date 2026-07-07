@@ -44,8 +44,15 @@ public struct SupervisedSession: Sendable {
         return name
     }
 
-    /// A human label for logs: the pty display name if any, else the id.
-    public var label: String { tags["displayName"] ?? name }
+    /// A human-readable STABLE logical id for events/logs — `<agent-dir>/<session-key>` derived from
+    /// the persistent `ptyfile`/`ptyfile.session` tags (e.g. `convoy/claude`). Unlike the pty `name`
+    /// (id, which churns) or a display label, this survives respawns and `pty kill`, so a consumer
+    /// (the capstone eval's respawn gate) can bind to it. Falls back to the pty id if the tags are absent.
+    public var logicalId: String {
+        guard let session = ptyfileSession else { return name }
+        let dir = (ptyfileDir ?? cwd).map { ($0 as NSString).lastPathComponent } ?? ""
+        return dir.isEmpty ? session : dir + "/" + session
+    }
 
     /// The current declared-command fingerprint. INTEGRATION NOTE: the registry exposes `command`
     /// as one joined string, so convoy hashes it as `command` with empty args. It is self-consistent
