@@ -51,6 +51,11 @@ struct Up: ParsableCommand {
     var keepSessions = false
 
     func run() throws {
+        // Unbuffer stdout: this is a long-running emitter, so --json events (and progress lines)
+        // must reach the consumer LIVE, not sit in a block buffer until exit. Without this, a
+        // `convoy up --json | jq` (and the capstone eval's respawn gate) sees nothing until teardown.
+        setvbuf(stdout, nil, _IONBF, 0)
+
         let root = network ?? Up.defaultRoot()
         let host = PtyHost(root: network)
         let pidPath = root + "/convoy.pid"
@@ -67,9 +72,10 @@ struct Up: ParsableCommand {
         // (which can churn across respawns). This is convoy's source of truth for the counter, so
         // the flapping-cap holds regardless of whether pty preserves runtime tags across a respawn.
         var state: [String: StrategyTags] = [:]
+        var permanentKeys = Set<String>()
         var supervised = Set<String>()
         repeat {
-            reconcileTick(host: host, state: &state, supervised: &supervised)
+            reconcileTick(host: host, state: &state, permanentKeys: &permanentKeys, supervised: &supervised)
             if once { break }
             sleepInterruptibly(seconds: reconcileInterval)
         } while convoyUpStopRequested == 0
@@ -79,15 +85,37 @@ struct Up: ParsableCommand {
 
     // MARK: Reconcile
 
-    private func reconcileTick(host: PtyHost, state: inout [String: StrategyTags], supervised: inout Set<String>) {
+    private func reconcileTick(host: PtyHost, state: inout [String: StrategyTags], permanentKeys: inout Set<String>, supervised: inout Set<String>) {
         let now = Date()
-        for s in host.permanentSessions() {
+        for s in host.sessions() {
+            // Permanence is a property of the DECLARED session, not the runtime `strategy` tag —
+            // `pty kill` STRIPS that tag, so a killed permanent session would otherwise disappear from
+            // supervision (silently breaking the operator-restart workflow, spec §5.6.2). Learn each
+            // session's permanence while the tag is present; remember it thereafter.
+            if s.isPermanent { permanentKeys.insert(s.name) }
+            guard s.isPermanent || permanentKeys.contains(s.name) else { continue }
+
             supervised.insert(s.name)
             guard s.isGone else { continue }
 
-            let key = s.logicalKey
+            // Key state on the pty id: stable across `pty restart` respawns (which keep the id) and it
+            // survives `pty kill`. (Post-cutover this binds to the tag-pair identity; see Host.swift.)
+            let key = s.name
             // Prior state from convoy's store; seed from the session's on-disk tags on first sight.
-            let prior = state[key] ?? StrategyTags.parse(from: s.tags)
+            var prior = state[key] ?? StrategyTags.parse(from: s.tags)
+
+            // §5.5 manual reset. convoy owns the counter, so the operator's `pty tag <name>
+            // --rm strategy.status` reaches us as a divergence: we think it's flapping, but the
+            // on-disk flag is gone. Honor it — clear status AND the counter so the session gets a
+            // genuine retry (clearing status alone would re-flap on the very next fast fail).
+            if prior.isFlapping && s.tags[StrategyTags.kStatus] == nil {
+                prior.status = nil
+                prior.consecutiveFastFails = 0
+                state[key] = prior
+                emit(["type": "reset", "identity": s.label, "session": s.name, "reason": "manual", "ts": StrategyTags.isoString(now)],
+                     human: "[convoy-up] reset \(s.label) session=\(s.name) — operator cleared strategy.status; retrying.")
+            }
+
             let window = FlappingCap.effectiveWindow(tag: prior.fastFailWindowOverride, cliGlobal: fastFailWindow)
             let limit = FlappingCap.effectiveLimit(tag: prior.fastFailLimitOverride, cliGlobal: fastFailLimit)
             let decision = FlappingCap.classify(
@@ -105,6 +133,9 @@ struct Up: ParsableCommand {
                 state[key] = newTags
                 host.setTags(s.name, newTags.writtenTags())
                 host.removeTag(s.name, StrategyTags.kStatus) // respawn never flaps; clear any stale flag
+                // `pty kill` strips `strategy=permanent`; re-assert it so the registry stays truthful
+                // and a fresh host (after a crash) still recognizes this session as supervised.
+                host.setTags(s.name, ["strategy": "permanent"])
                 let ok = host.respawn(s.name)
                 emit([
                     "type": "respawn", "identity": s.label, "session": s.name,
