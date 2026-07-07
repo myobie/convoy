@@ -130,14 +130,9 @@ public struct PtyHost {
         (try? Shell.run("pty", ["restart", "-y", name], env: env(), check: false))?.ok ?? false
     }
 
-    /// Cold-start a session set from a dir's `pty.toml` (initial bring-up of never-started
-    /// sessions). The reconcile loop uses `respawn` for gone-but-registered sessions.
-    @discardableResult
-    public func bringUp(dir: String, session: String?) -> Bool {
-        var args = ["up", dir]
-        if let session { args.append(session) }
-        return (try? Shell.run("pty", args, env: env(), check: false))?.ok ?? false
-    }
+    // (Removed `bringUp` — it wrapped `pty up`, which the pty §3.4-B cutover deleted. It was unused:
+    //  convoy up reconciles EXISTING registered sessions via `respawn` (pty restart); sessions are
+    //  created by `convoy add` → st launch → pty run, not by convoy up.)
 
     @discardableResult
     public func kill(_ name: String) -> Bool {
