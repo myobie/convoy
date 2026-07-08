@@ -3,10 +3,10 @@
 
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { run } from "./exec.ts";
 import { Bus, isLive } from "./bus.ts";
-import { PtyHost } from "./host.ts";
+import { PtyHost, spawnFromPtyFile, type SupervisedSession } from "./host.ts";
 import { nativeLaunch } from "./launch.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
@@ -330,6 +330,52 @@ export async function cmdRemove(args: string[]): Promise<number> {
   for (const s of sessions) out((await host.kill(s.name)) ? `✓ stopped ${s.name}` : `• ${s.name} didn't stop cleanly (already exited?)`);
   out(`✓ ${identity} removed from the convoy.`);
   return 0;
+}
+
+/** `convoy reload <id>` — re-materialize an agent from its pty.toml (kill + spawnFromPtyFile).
+ *  Unlike the reconcile respawn (which reuses the STORED metadata.command — the frozen-metadata
+ *  coupling), this RE-READS pty.toml, so edits to permission-mode / displayName / the ding ref /
+ *  --resume take effect. The manual escape hatch for "I changed pty.toml and want it applied." */
+export async function cmdReload(args: string[]): Promise<number> {
+  const network = optValue(args, "--network");
+  const identity = positionals(args)[0];
+  if (!identity) {
+    err("missing identity. Usage: convoy reload <id> [--dry-run]");
+    return 2;
+  }
+  // Match the agent's sessions (claude + ding) robustly by their repo dir — each agent's session
+  // runs in its own repo, so the pty.toml dir (or cwd) basename identifies the agent, surviving
+  // session-name churn. Normalize both (drop harness suffix + non-alphanumerics).
+  const norm = (s: string): string => s.replace(/-(claude|codex)$/i, "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const dirOf = (s: SupervisedSession): string => {
+    const pf = s.tags["ptyfile"];
+    return pf ? basename(dirname(pf)) : s.cwd ? basename(s.cwd) : "";
+  };
+  const host = new PtyHost(network);
+  const sessions = (await host.sessions()).filter((s) => s.name === identity || norm(dirOf(s)) === norm(identity));
+  if (sessions.length === 0) {
+    err(`no running pty sessions for "${identity}". \`convoy ls\` to list members.`);
+    return 1;
+  }
+  const ptyfile = sessions.map((s) => s.tags["ptyfile"]).find((p) => p);
+  if (!ptyfile) {
+    err(`can't resolve pty.toml for "${identity}" (no ptyfile tag on its sessions).`);
+    return 1;
+  }
+  const dir = dirname(ptyfile);
+  out(`convoy reload — plan for ${identity} (from ${ptyfile}):`);
+  for (const s of sessions) out(`  stop ${s.name}`);
+  out("  respawn fresh from pty.toml (re-reads it — permission-mode / displayName / ding-ref / --resume edits take effect)");
+  if (hasFlag(args, "--dry-run")) {
+    out("\n✓ Dry run only. Re-run without --dry-run to execute.");
+    return 0;
+  }
+  for (const s of sessions) await host.kill(s.name);
+  const { spawned, failed } = await spawnFromPtyFile(dir, network);
+  for (const n of spawned) out(`✓ spawned ${n}`);
+  for (const n of failed) out(`✗ failed ${n}`);
+  out(`✓ reloaded ${identity} from pty.toml.`);
+  return failed.length > 0 ? 1 : 0;
 }
 
 export async function cmdApp(args: string[]): Promise<number> {

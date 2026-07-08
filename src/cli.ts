@@ -1,7 +1,7 @@
 // convoy CLI — hand-rolled argv dispatch (like pty's src/cli.ts). `ls` is the default subcommand.
 
 import { up, type UpOptions } from "./up.ts";
-import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdInit, cmdLs, cmdPersonas, cmdRemove, hasFlag, optValue, positionals } from "./commands.ts";
+import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdInit, cmdLs, cmdPersonas, cmdReload, cmdRemove, hasFlag, optValue, positionals } from "./commands.ts";
 
 export async function main(argv: string[]): Promise<void> {
   const cmd = argv[0];
@@ -24,6 +24,7 @@ export async function main(argv: string[]): Promise<void> {
     case "init": code = await cmdInit(rest); break;
     case "add": code = await cmdAdd(rest); break;
     case "remove": code = await cmdRemove(rest); break;
+    case "reload": code = await cmdReload(rest); break;
     case "cos": code = await cmdCos(rest); break;
     case "up": code = await cmdUp(rest); break;
     case "personas": code = await cmdPersonas(rest); break;
