@@ -143,3 +143,78 @@ export async function up(opts: UpOptions): Promise<number> {
   lock.release();
   return 0;
 }
+
+export interface DownOptions {
+  network?: string | undefined;
+  json?: boolean;
+  dryRun?: boolean;
+  force?: boolean;
+}
+
+/** `convoy down [<network>]` — explicit teardown; the ONLY path that kills sessions. Mirror of the
+ *  Nomad model: stopping `convoy up` DETACHES (agents keep running), `convoy down` TEARS DOWN. Scope
+ *  is convoy's own agents (sessions spawned from a pty.toml — the `ptyfile.session` tag), so it never
+ *  nukes unrelated pty sessions. Refuses while a `convoy up`/app host holds the lock — it would respawn
+ *  what we kill (reconcile respawns gone permanent sessions) — unless `--force`. */
+export async function down(opts: DownOptions): Promise<number> {
+  const root = opts.network ?? defaultRoot();
+  const host = new PtyHost(opts.network ?? null);
+  const lock = new HostLock(root);
+  const json = opts.json === true;
+  const out = (s = ""): void => {
+    process.stdout.write(`${s}\n`);
+  };
+
+  // convoy's own agents (spawned from a pty.toml) that are still LIVE. Excludes `gone` sessions:
+  // their metadata lingers on disk after exit, but a teardown only kills the running ones — counting
+  // already-dead sessions would fail their `pty kill` and mis-report a clean teardown as a failure.
+  const agents = (await host.sessions()).filter((s) => s.tags["ptyfile.session"] !== undefined && !gone(s));
+
+  if (agents.length === 0) {
+    if (json) out(JSON.stringify({ type: "down", network: root, planned: 0, stopped: 0, failed: 0 }));
+    else out(`convoy down: no live agent sessions on ${root} — already down.`);
+    return 0;
+  }
+
+  if (!json) {
+    out(`convoy down — tearing down ${agents.length} agent session(s) on ${root}:`);
+    for (const s of agents) out(`  kill ${logicalId(s)} (${s.name})`);
+  }
+
+  // Dry-run is read-only — never gated on the host lock (a preview must work even while `up` hosts).
+  if (opts.dryRun === true) {
+    if (json) out(JSON.stringify({ type: "down", network: root, dryRun: true, planned: agents.length, sessions: agents.map((s) => ({ id: logicalId(s), session: s.name })) }));
+    else out(`\n✓ Dry run only. Re-run without --dry-run to tear down.`);
+    return 0;
+  }
+
+  // Real teardown — a live `convoy up`/app host would RESPAWN gone permanent sessions (reconcile:
+  // `if (!gone(s)) continue`), fighting the kill. Refuse unless --force, and point at the owner.
+  const owner = lock.liveOwner();
+  if (owner !== null && opts.force !== true) {
+    process.stderr.write(
+      `convoy down: convoy up is hosting this network (pid ${owner}) — it would respawn what we tear down.\n` +
+        `Stop the host first (Ctrl-C / kill ${owner}), then \`convoy down\` — or \`convoy down --force\` to override.\n`,
+    );
+    return 1;
+  }
+
+  // Claim the lock for the teardown so a `convoy up` can't start mid-kill and re-adopt/respawn what we
+  // stop. Skip when --force overrides a live owner (we must never clobber another host's lock).
+  const acquired = owner === null;
+  if (acquired) lock.acquire();
+  try {
+    const stopped: string[] = [];
+    const failed: string[] = [];
+    for (const s of agents) {
+      const ok = await host.kill(s.name);
+      (ok ? stopped : failed).push(s.name);
+      if (!json) out(ok ? `✓ stopped ${logicalId(s)} (${s.name})` : `• ${logicalId(s)} (${s.name}) didn't stop cleanly (already exited?)`);
+    }
+    if (json) out(JSON.stringify({ type: "down", network: root, planned: agents.length, stopped: stopped.length, failed: failed.length }));
+    else out(`✓ convoy down complete — ${stopped.length}/${agents.length} stopped${failed.length ? `, ${failed.length} failed` : ""}.`);
+    return failed.length > 0 ? 1 : 0;
+  } finally {
+    if (acquired) lock.release();
+  }
+}

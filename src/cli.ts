@@ -1,6 +1,6 @@
 // convoy CLI — hand-rolled argv dispatch (like pty's src/cli.ts). `ls` is the default subcommand.
 
-import { up, type UpOptions } from "./up.ts";
+import { down, up, type DownOptions, type UpOptions } from "./up.ts";
 import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdInit, cmdLs, cmdPersonas, cmdReload, cmdRemove, hasFlag, optValue, positionals } from "./commands.ts";
 
 export async function main(argv: string[]): Promise<void> {
@@ -27,6 +27,7 @@ export async function main(argv: string[]): Promise<void> {
     case "reload": code = await cmdReload(rest); break;
     case "cos": code = await cmdCos(rest); break;
     case "up": code = await cmdUp(rest); break;
+    case "down": code = await cmdDown(rest); break;
     case "personas": code = await cmdPersonas(rest); break;
     case "app": code = await cmdApp(rest); break;
     case "-h":
@@ -58,6 +59,15 @@ async function cmdUp(args: string[]): Promise<number> {
   return up(opts);
 }
 
+async function cmdDown(args: string[]): Promise<number> {
+  const opts: DownOptions = {};
+  opts.json = hasFlag(args, "--json");
+  opts.dryRun = hasFlag(args, "--dry-run");
+  opts.force = hasFlag(args, "--force");
+  opts.network = positionals(args)[0];
+  return down(opts);
+}
+
 function printHelp(): void {
   process.stdout.write(
     "convoy — stand up and run your crew of agents (TypeScript).\n\n" +
@@ -68,6 +78,7 @@ function printHelp(): void {
       "  add <role>     add an agent (correct-by-construction) [--identity --network --dir --mcp --permanent --dry-run]\n" +
       "  cos --repo <d> bootstrap a Chief of Staff\n" +
       "  up <network>   host a network in the foreground (TCC anchor + supervisor + flapping-cap)\n" +
+      "  down [network] tear down the network — the ONLY path that kills sessions [--dry-run --force --json]\n" +
       "  remove <id>    remove an agent\n" +
       "  personas <status|install>\n" +
       "  app <status>\n",

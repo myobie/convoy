@@ -25,7 +25,7 @@ export function positionals(args: string[]): string[] {
   }
   return out;
 }
-const BOOL_FLAGS = new Set(["--dry-run", "--yes", "-y", "--mcp", "--permanent", "--purge", "--json", "--live-only", "--no-channel"]);
+const BOOL_FLAGS = new Set(["--dry-run", "--yes", "-y", "--mcp", "--permanent", "--purge", "--json", "--live-only", "--no-channel", "--force"]);
 export function optValue(args: string[], name: string): string | null {
   const i = args.indexOf(name);
   return i >= 0 && i + 1 < args.length ? args[i + 1]! : null;
