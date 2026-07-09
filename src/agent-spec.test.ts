@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isValidIdentity, preflight, specPermanent, specPermissionMode, type AgentSpec } from "./agent-spec.ts";
+import { agentShort, isValidIdentity, preflight, sessionId, shortHostname, specPermanent, specPermissionMode, specPrefix, type AgentSpec } from "./agent-spec.ts";
 import type { Role } from "./role.ts";
 
 // Pin an EMPTY personas dir so persona resolution is deterministic (no real worker.md leaking in).
@@ -28,6 +28,7 @@ function spec(over: Partial<AgentSpec> = {}): AgentSpec {
     personaOverride: null,
     workingDir: null,
     permanentOverride: null,
+    prefix: null,
     ...over,
   };
 }
@@ -39,13 +40,22 @@ describe("AgentSpec (ported from AgentSpecTests.swift)", () => {
     for (const bad of ["-x", "Cap", "has space", "", ".dot", "a/b"]) expect(isValidIdentity(bad)).toBe(false);
   });
 
-  it("derives permission-mode + permanent from role", () => {
-    expect(specPermissionMode(spec({ role: "worker" }))).toBe("auto");
-    expect(specPermanent(spec({ role: "worker" }))).toBe(false);
-    for (const r of ["chief-of-staff", "supervisor", "technical-manager"] as Role[]) {
+  it("permission-mode is bypassPermissions for EVERY role (interim posture); permanent derives from role", () => {
+    for (const r of ["worker", "chief-of-staff", "supervisor", "technical-manager"] as Role[]) {
       expect(specPermissionMode(spec({ role: r }))).toBe("bypassPermissions");
     }
+    expect(specPermanent(spec({ role: "worker" }))).toBe(false);
     expect(specPermanent(spec({ role: "chief-of-staff" }))).toBe(true);
+  });
+
+  it("session-id: <prefix>.<agentShort>; agentShort strips the harness suffix; prefix defaults to hostname", () => {
+    expect(sessionId(spec({ identity: "convoy-claude", prefix: "silber" }))).toBe("silber.convoy");
+    expect(sessionId(spec({ identity: "app-web-claude", prefix: "silber" }))).toBe("silber.app-web");
+    expect(sessionId(spec({ identity: "bare", prefix: "h" }))).toBe("h.bare");
+    expect(agentShort("cos-codex")).toBe("cos");
+    expect(specPrefix(spec({ prefix: "custom" }))).toBe("custom");
+    expect(specPrefix(spec({ prefix: null }))).toBe(shortHostname());
+    expect(shortHostname()).toBe(shortHostname().toLowerCase()); // lowercased to match pty's id charset
   });
 
   it("--permanent override forces permanent (never forces role default OFF)", () => {
@@ -55,8 +65,9 @@ describe("AgentSpec (ported from AgentSpecTests.swift)", () => {
   });
 
   it("derived wiring surfaces the correct-by-construction table", () => {
-    const d = derivedMap(spec({ role: "worker", identity: "demo-wk" }));
-    expect(d["permission-mode"]).toBe("auto");
+    const d = derivedMap(spec({ role: "worker", identity: "demo-wk", prefix: "host" }));
+    expect(d["permission-mode"]).toBe("bypassPermissions");
+    expect(d["session-id"]).toBe("host.demo-wk");
     expect(d["role"]).toBe("worker");
     expect(d["transport"]).toBe("ding");
     expect(d["identity"]).toBe("demo-wk");

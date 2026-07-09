@@ -1,20 +1,32 @@
 // Native launch — convoy writes ALL agent wiring itself. No `st launch` shell, no `cmdLaunch` import
 // (both are being deleted). This reimplements what `st launch` wrote (captured from st 2026-07-07):
-// pty.toml, the claude session command + session-id/--resume, PERSONA.md / DING-BUS.md / CLAUDE.md,
+// pty.toml, the claude session command (cold-start boot prompt), PERSONA.md / DING-BUS.md / CLAUDE.md,
 // the Claude Code hooks, and the `st ding` sidecar. smalltalk keeps ONLY: the bus (`st`), the `st ding`
 // binary (spawned as a command, not imported), and the hook SCRIPTS (referenced by path).
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stringify as tomlStringify } from "smol-toml";
-import { run } from "./exec.ts";
 import { spawnFromPtyFile } from "./host.ts";
 import { ensureInstalled } from "./personas.ts";
-import { resolvedPersonaPath, specPermanent, specPermissionMode, type AgentSpec } from "./agent-spec.ts";
+import { resolvedPersonaPath, sessionId, specPermanent, specPermissionMode, type AgentSpec } from "./agent-spec.ts";
+import type { Role } from "./role.ts";
 
 const HARNESS_SESSION = "claude"; // the pty session key for the agent's main session (claude harness)
+
+// The initial boot-ritual PROMPT handed to claude as its first arg — a COLD start. A real prompt
+// actually processes on launch and triggers the agent's boot (set available, drain inbox); a blank
+// auto-poker just left queued input. Keep these single-quote-safe (no apostrophes) — the launch
+// command wraps them in single quotes for `sh -c`.
+const BOOT_PROMPT_WORKER =
+  "You just cold-started. Run your boot ritual now: set your st status to available and drain your inbox (read, act on, and archive each message). Then stand by for work delivered via ding.";
+const BOOT_PROMPT_COS =
+  "You just cold-started. Run your boot ritual (set status available, drain inbox). If this is a fresh network with no populated private cos repo, run your first-run interview now, per your persona.";
+/** The CoS gets the first-run-interview variant; every other role gets the worker boot. */
+export function bootPrompt(role: Role): string {
+  return role === "chief-of-staff" ? BOOT_PROMPT_COS : BOOT_PROMPT_WORKER;
+}
 
 /** Where smalltalk's Claude Code hook scripts live (smalltalk keeps these; st launch is gone).
  *  SMALLTALK_DIR overrides; else the sibling `../smalltalk` repo (github.com/myobie layout). */
@@ -42,60 +54,50 @@ function hookRefs(): { stBin: string; sessionStart: string; preCompact: string; 
   return refs;
 }
 
-/** The agent's pinned Claude session id. Existing `.claude-session-id` → resume its (rich) jsonl.
- *  New → mint a UUID, write it, and SEED the jsonl with a non-interactive `claude --print`
- *  (a PROMPT arg + closed stdin, so it does NOT hang like st launch's promptless bootstrap). Either
- *  way the launch command uses `--resume <sid>`, so first-run and every respawn resume the same id. */
-export async function ensureSessionId(dir: string): Promise<string> {
-  const path = join(dir, ".claude-session-id");
-  if (existsSync(path)) {
-    const sid = readFileSync(path, "utf8").trim();
-    if (sid) return sid; // migrating/returning agent — its jsonl already exists
-  }
-  const sid = randomUUID();
-  writeFileSync(path, sid);
-  // Seed the jsonl so `--resume <sid>` resolves on first run. `--print` + a prompt + closed stdin =
-  // non-interactive, no hang. Best-effort: if the seed fails, `--resume` still creates on first run.
-  await run("claude", ["--print", "--session-id", sid, "reply with exactly: ready"], { cwd: dir, input: "" });
-  return sid;
+/** The agent's main claude session command: a COLD start — no `--resume`, no auto-poker — that hands
+ *  claude the INITIAL BOOT-RITUAL PROMPT as its first arg. The prompt is single-quoted so `sh -c`
+ *  passes it to claude as one argument. Restart context-preservation (what `--resume` used to give) is
+ *  the separate hooks work; the launch command is the clean cold-start. */
+export function claudeCommand(permissionMode: string, prompt: string): string {
+  return `exec claude --permission-mode ${permissionMode} '${prompt}'`;
 }
 
-/** The agent's main claude session command: the unattended auto-poker that dismisses claude's
- *  first-launch TUI gates (workspace-trust / dev-channels / resume dialog), then `exec claude`. */
-export function claudeCommand(displayName: string, permissionMode: string, sid: string): string {
-  const poke = Array.from({ length: 4 }, () => `sleep 4 && pty send ${displayName} --seq key:return`).join("; ");
-  return `(${poke}) & exec claude --permission-mode ${permissionMode} --resume ${sid}`;
+/** The ding sidecar command — pokes the agent's claude session when its bus inbox gets mail. Points at
+ *  the stable session id (`st ding <prefix.agentShort> --identity <bus-id>`). `st ding` stays a
+ *  smalltalk runtime binary. */
+export function dingCommand(busId: string, claudeSessionId: string): string {
+  return `st ding ${claudeSessionId} --identity ${busId}`;
 }
 
-/** The ding sidecar command — the inbox notifier. `st ding` stays a smalltalk runtime binary. */
-export function dingCommand(agent: string, displayName: string): string {
-  return `st ding ${displayName} --identity ${agent}`;
-}
-
-/** Serialize the per-agent pty.toml (pty's manifest format — NOT a convoy.toml). */
-function writePtyToml(dir: string, spec: AgentSpec, sid: string): void {
-  const agent = spec.identity;
+/** Serialize the per-agent pty.toml (pty's manifest format — NOT a convoy.toml). Pins the session ids
+ *  to `<prefix>.<agentShort>` (claude) and `<prefix>.<agentShort>.ding` so the ding + name refs stay
+ *  stable across respawns; prefix defaults to the short hostname. */
+export function writePtyToml(dir: string, spec: AgentSpec): void {
+  const busId = spec.identity; // the bus identity, e.g. convoy-claude
   const root = spec.networkRoot;
-  const displayName = `${agent}-${HARNESS_SESSION}`;
+  const claudeId = sessionId(spec); // e.g. silber.convoy
+  const dingId = `${claudeId}.ding`; // e.g. silber.convoy.ding
   const permanent = specPermanent(spec);
   const stTag = root ? { "st.network": root } : {};
-  const env: Record<string, string> = { ST_AGENT: agent };
+  const env: Record<string, string> = { ST_AGENT: busId };
   if (root) {
     env["ST_ROOT"] = root;
     env["PTY_ROOT"] = `${root}/pty`;
   }
   const doc: Record<string, unknown> = {
-    prefix: agent,
+    prefix: claudeId,
     sessions: {
       [HARNESS_SESSION]: {
-        command: claudeCommand(displayName, specPermissionMode(spec), sid),
+        id: claudeId,
+        command: claudeCommand(specPermissionMode(spec), bootPrompt(spec.role)),
         tags: { role: "agent", ...(permanent ? { strategy: "permanent" } : {}), ...stTag },
         env,
       },
       ...(spec.transport === "ding"
         ? {
             ding: {
-              command: dingCommand(agent, displayName),
+              id: dingId,
+              command: dingCommand(busId, claudeId),
               tags: { role: "ding", ...(permanent ? { strategy: "permanent" } : {}), ...stTag },
               env,
             },
@@ -164,10 +166,9 @@ export async function nativeLaunch(spec: AgentSpec): Promise<{ spawned: string[]
     }
   }
 
-  const sid = await ensureSessionId(dir);
   writeContextFiles(dir, spec);
   writeHooks(dir);
-  writePtyToml(dir, spec, sid);
+  writePtyToml(dir, spec);
 
   // Create the agent's bus member folder BEFORE spawning `st ding`. The ding watcher errors at startup
   // if `$ST_ROOT/<identity>/{inbox,archive}` is missing → the worker is never poked → it parks. `st
@@ -202,8 +203,9 @@ your terminal; always confirm the actual message via \`st message ls\` + \`st me
 
 ## Resume safety — do NOT double-act (important for hosted/respawned agents)
 
-The host (\`convoy up\`) respawns you with \`--resume <sid>\`, so on a restart you come back with your
-PRIOR context. But the boot re-drain (step 2) re-surfaces every inbox item you had not archived yet. If a
+The host (\`convoy up\`) respawns you on a COLD start (no \`--resume\` yet — restart context-preservation
+is coming as separate hooks work), so a restart re-runs your boot ritual from scratch. The boot re-drain
+(step 2) re-surfaces every inbox item you had not archived yet. If a
 drained item is one your resumed context shows you ALREADY acted on — e.g. a delegation "kick" you
 already delegated — **archive it WITHOUT re-acting.** Re-reading and re-delegating an already-processed
 kick is a double-delegation bug.

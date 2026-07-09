@@ -252,6 +252,7 @@ export async function cmdAdd(args: string[]): Promise<number> {
     personaOverride: optValue(args, "--persona"),
     workingDir: optValue(args, "--dir"),
     permanentOverride: hasFlag(args, "--permanent") ? true : null,
+    prefix: optValue(args, "--prefix"),
   };
   out(`convoy add — ${identity}`);
   return launchSpec(spec, { dryRun: hasFlag(args, "--dry-run") });
@@ -303,6 +304,7 @@ export async function cmdCos(args: string[]): Promise<number> {
     personaOverride: optValue(args, "--persona"),
     workingDir: absRepo,
     permanentOverride: null,
+    prefix: optValue(args, "--prefix"),
   };
   const rc = await launchSpec(spec, { dryRun });
   if (rc === 0 && !dryRun) out("The CoS will run its first-run interview on boot.");

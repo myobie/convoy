@@ -2,8 +2,9 @@
 // Sources/ConvoyKit/AgentSpec.swift. No hand-authored pty.toml, no hand-set ENV, no hand-chosen mode.
 
 import { existsSync, statSync } from "node:fs";
+import { hostname } from "node:os";
 import { baseFile } from "./personas.ts";
-import { permanentByRole, permissionMode, type PermissionMode, type Role } from "./role.ts";
+import { permanentByRole, type PermissionMode, type Role } from "./role.ts";
 
 export type Transport = "mcp" | "ding";
 export type Harness = "claude" | "codex";
@@ -18,10 +19,37 @@ export interface AgentSpec {
   workingDir: string | null;
   /** `--permanent` override; null = derive from role (only the CoS is permanent). */
   permanentOverride: boolean | null;
+  /** `--prefix` for the pinned session id (`<prefix>.<agentShort>`); null = default to the short hostname. */
+  prefix: string | null;
 }
 
-export function specPermissionMode(s: AgentSpec): PermissionMode {
-  return permissionMode(s.role);
+/** INTERIM POSTURE: every agent launches `bypassPermissions`. Unattended agents (esp. workers) stall
+ *  on permission prompts — they can't git push, drain the bus, etc. — so the whole network runs bypass.
+ *  This deliberately overrides the role→mode design table (`role.ts permissionMode`, which the
+ *  ACCEPTANCE table still describes as spawner=bypass / worker=auto); revisit when the permission/hooks
+ *  work (#10) lands. Both the generated launch command AND the derived display read from here, so they
+ *  never diverge. */
+export function specPermissionMode(_s: AgentSpec): PermissionMode {
+  return "bypassPermissions";
+}
+/** Short hostname (no domain), LOWERCASED — the default session-id prefix per Nathan's naming decision.
+ *  Lowercased so it matches pty's id charset + the validated live ids (`silber`, not `Silber.local`). */
+export function shortHostname(): string {
+  const h = hostname();
+  return (h.split(".")[0] || h).toLowerCase();
+}
+/** The session-id prefix: `--prefix` override, else the short hostname (e.g. `silber`). */
+export function specPrefix(s: AgentSpec): string {
+  return s.prefix ?? shortHostname();
+}
+/** The agent's short name — the bus identity minus the harness suffix (`convoy-claude` → `convoy`). */
+export function agentShort(identity: string): string {
+  return identity.replace(/-(claude|codex)$/i, "");
+}
+/** The pinned pty session id for the claude session: `<prefix>.<agentShort>` (e.g. `silber.convoy`).
+ *  The ding session appends `.ding`. Stable across respawns so ding + name refs never drift. */
+export function sessionId(s: AgentSpec): string {
+  return `${specPrefix(s)}.${agentShort(s.identity)}`;
 }
 export function specPermanent(s: AgentSpec): boolean {
   return s.permanentOverride ?? permanentByRole(s.role);
@@ -85,6 +113,7 @@ export function preflight(s: AgentSpec, existing: string[]): Preflight {
   const derived: [string, string][] = [
     ["harness", s.harness],
     ["identity", s.identity],
+    ["session-id", sessionId(s)],
     ["role", s.role],
     ["transport", effectiveTransport],
     ["permission-mode", specPermissionMode(s)],
