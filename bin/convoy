@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// convoy — TypeScript entrypoint. Node (≥23.6) strips the types from the imported `.ts` at load, so
-// there is no build step (matches smalltalk's `--experimental-strip-types` convention). The command
-// surface (add/up/cos/init/ls/doctor/remove/personas) lands in src/cli.ts across milestones M4–M5;
-// for now this shim just proves the wiring.
+// convoy — the CLI entrypoint (package.json `bin`). Node (≥23.6) strips the types from the imported
+// `.ts` at load, so there is no build step (matches smalltalk's `--experimental-strip-types`
+// convention). Loads the full command surface (add/up/down/cos/init/ls/doctor/remove/reload/personas)
+// from src/cli.ts.
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -12,7 +12,14 @@ try {
   await main(process.argv.slice(2));
 } catch (err) {
   if (err && typeof err === "object" && "code" in err && err.code === "ERR_MODULE_NOT_FOUND") {
-    console.error("convoy (TS): CLI not wired yet — see notes/TS-PORT-PLAN.md (M4/M5).");
+    const detail = "message" in err ? String(err.message).split("\n")[0] : "a dependency is missing";
+    console.error(
+      `convoy: failed to load — ${detail}.\n` +
+        "convoy depends on @myobie/pty via file:../pty, so build + install its deps first:\n" +
+        "  cd ../pty && npm install && npm run build   # build pty (required)\n" +
+        "  npm install                                 # in convoy\n" +
+        "See BUILD.md.",
+    );
     process.exit(2);
   }
   console.error(err instanceof Error ? err.message : String(err));
