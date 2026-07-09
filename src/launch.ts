@@ -10,11 +10,19 @@ import { fileURLToPath } from "node:url";
 import { stringify as tomlStringify } from "smol-toml";
 import { spawnFromPtyFile } from "./host.ts";
 import { ensureInstalled } from "./personas.ts";
-import { resolvedPersonaPath, sessionId, specPermanent, specPermissionMode, type AgentSpec } from "./agent-spec.ts";
+import { resolvedPersonaPath, sessionId, specPermanent, specPermissionMode, type AgentSpec, type Harness } from "./agent-spec.ts";
 import type { Role } from "./role.ts";
 import { pretrustDir } from "./trust.ts";
 
-const HARNESS_SESSION = "claude"; // the pty session key for the agent's main session (claude harness)
+// The pty session key is per-harness: claude → [sessions.claude], codex → [sessions.codex]. (Before,
+// this was hardcoded "claude", so `--harness codex` silently wrote a claude session — a false-harness
+// footgun.)
+const HARNESS_SESSION_KEY: Record<Harness, string> = { claude: "claude", codex: "codex" };
+
+/** codex has no MCP transport, so a codex agent always runs the ding sidecar; claude honors its transport. */
+function usesDing(spec: AgentSpec): boolean {
+  return spec.harness === "codex" || spec.transport === "ding";
+}
 
 // The initial boot-ritual PROMPT handed to claude as its first arg — a COLD start. A real prompt
 // actually processes on launch and triggers the agent's boot (set available, drain inbox); a blank
@@ -90,11 +98,12 @@ function hookRefs(): { stBin: string; sessionStart: string; preCompact: string; 
   };
 }
 
-/** The agent's main claude session command: a COLD start — no `--resume`, no auto-poker — that hands
- *  claude the INITIAL BOOT-RITUAL PROMPT as its first arg. The prompt is single-quoted so `sh -c`
- *  passes it to claude as one argument. Restart context-preservation (what `--resume` used to give) is
- *  the separate hooks work; the launch command is the clean cold-start. */
-export function claudeCommand(permissionMode: string, prompt: string): string {
+/** The agent's main harness session command: a COLD start — no auto-poker — handing the harness the
+ *  INITIAL BOOT-RITUAL PROMPT as its first arg (single-quoted so `sh -c` passes it as one argument).
+ *  claude gates on `--permission-mode`; codex, which runs unattended like every other agent, bypasses
+ *  approvals + sandbox (the parallel to claude's bypass posture). */
+export function harnessCommand(harness: Harness, permissionMode: string, prompt: string): string {
+  if (harness === "codex") return `exec codex --dangerously-bypass-approvals-and-sandbox '${prompt}'`;
   return `exec claude --permission-mode ${permissionMode} '${prompt}'`;
 }
 
@@ -111,8 +120,8 @@ export function dingCommand(busId: string, claudeSessionId: string): string {
 export function writePtyToml(dir: string, spec: AgentSpec): void {
   const busId = spec.identity; // the bus identity, e.g. convoy-claude
   const root = spec.networkRoot;
-  const claudeId = sessionId(spec); // e.g. silber.convoy
-  const dingId = `${claudeId}.ding`; // e.g. silber.convoy.ding
+  const harnessId = sessionId(spec); // e.g. silber.convoy (agentShort strips the -claude/-codex suffix)
+  const dingId = `${harnessId}.ding`; // e.g. silber.convoy.ding
   const permanent = specPermanent(spec);
   const stTag = root ? { "st.network": root } : {};
   const env: Record<string, string> = { ST_AGENT: busId };
@@ -121,19 +130,19 @@ export function writePtyToml(dir: string, spec: AgentSpec): void {
     env["PTY_ROOT"] = `${root}/pty`;
   }
   const doc: Record<string, unknown> = {
-    prefix: claudeId,
+    prefix: harnessId,
     sessions: {
-      [HARNESS_SESSION]: {
-        id: claudeId,
-        command: claudeCommand(specPermissionMode(spec), bootPrompt(spec.role)),
+      [HARNESS_SESSION_KEY[spec.harness]]: {
+        id: harnessId,
+        command: harnessCommand(spec.harness, specPermissionMode(spec), bootPrompt(spec.role)),
         tags: { role: "agent", ...(permanent ? { strategy: "permanent" } : {}), ...stTag },
         env,
       },
-      ...(spec.transport === "ding"
+      ...(usesDing(spec)
         ? {
             ding: {
               id: dingId,
-              command: dingCommand(busId, claudeId),
+              command: dingCommand(busId, harnessId),
               tags: { role: "ding", ...(permanent ? { strategy: "permanent" } : {}), ...stTag },
               env,
             },
@@ -171,7 +180,7 @@ function writeContextFiles(dir: string, spec: AgentSpec): void {
     writeFileSync(join(dir, "PERSONA.md"), readFileSync(persona, "utf8"));
     imports.push("@PERSONA.md");
   }
-  if (spec.transport === "ding") {
+  if (usesDing(spec)) {
     writeFileSync(join(dir, "DING-BUS.md"), DING_BUS_MD);
     imports.push("@DING-BUS.md");
   }

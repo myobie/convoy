@@ -2,17 +2,25 @@ import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bootPrompt, claudeCommand, dingCommand, discoverSmalltalkDir, writePtyToml } from "./launch.ts";
+import { bootPrompt, dingCommand, discoverSmalltalkDir, harnessCommand, writePtyToml } from "./launch.ts";
 import type { AgentSpec } from "./agent-spec.ts";
 
 describe("native launch command builders (cold-start boot-prompt)", () => {
-  it("claudeCommand: cold start — exec claude with the mode + boot prompt, NO poker, NO --resume", () => {
+  it("harnessCommand claude: exec claude with the mode + boot prompt, NO poker, NO --resume", () => {
     const prompt = bootPrompt("worker");
-    const c = claudeCommand("bypassPermissions", prompt);
+    const c = harnessCommand("claude", "bypassPermissions", prompt);
     expect(c).toBe(`exec claude --permission-mode bypassPermissions '${prompt}'`);
     expect(c).not.toContain("--resume");
     expect(c).not.toContain("pty send"); // no auto-poker
     expect(c.startsWith("exec claude")).toBe(true);
+  });
+
+  it("harnessCommand codex: exec codex (bypass approvals+sandbox) with the boot prompt — NOT claude", () => {
+    const prompt = bootPrompt("worker");
+    const c = harnessCommand("codex", "bypassPermissions", prompt);
+    expect(c).toBe(`exec codex --dangerously-bypass-approvals-and-sandbox '${prompt}'`);
+    expect(c).not.toContain("claude");
+    expect(c.startsWith("exec codex")).toBe(true);
   });
 
   it("bootPrompt: cos gets the first-run-interview variant; others get the worker boot", () => {
@@ -67,6 +75,22 @@ describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
       const toml = readFileSync(join(dir, "pty.toml"), "utf8");
       expect(toml).toContain('id = "silber.cos"');
       expect(toml).toContain("first-run interview");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("harness codex writes a [sessions.codex] running exec codex — NOT a claude session (bug #: false-harness)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-ptytoml-codex-"));
+    try {
+      writePtyToml(dir, spec({ harness: "codex", identity: "vauban-codex", transport: "ding" }));
+      const toml = readFileSync(join(dir, "pty.toml"), "utf8");
+      expect(toml).toContain("[sessions.codex]");
+      expect(toml).toContain("exec codex --dangerously-bypass-approvals-and-sandbox");
+      expect(toml).not.toContain("[sessions.claude]");
+      expect(toml).not.toContain("exec claude");
+      expect(toml).toContain('id = "silber.vauban"'); // agentShort strips the -codex suffix
+      expect(toml).toContain("st ding silber.vauban --identity vauban-codex"); // ding sidecar present
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
