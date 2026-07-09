@@ -17,6 +17,38 @@ Early but real. The CLI is a **TypeScript package** (Node ≥23.6, which strips 
 
 The guiding requirement: **it must be impossible to misconfigure an agent.** `convoy add` takes high-level intent and derives all wiring correct-by-construction, validated before launch — see [notes/ACCEPTANCE.md](notes/ACCEPTANCE.md).
 
+## Getting Started
+
+convoy runs from source on **Node ≥ 23.6** (it strips the TS types at load — no build step). It orchestrates `st` (smalltalk) and `pty`, and **file-depends on `pty`**, so clone the four repos **as siblings** in one parent directory:
+
+```sh
+# e.g. under ~/src/github.com/compoundingtech
+git clone https://github.com/compoundingtech/pty
+git clone https://github.com/compoundingtech/smalltalk
+git clone https://github.com/compoundingtech/personas
+git clone https://github.com/compoundingtech/convoy
+
+# build pty — REQUIRED (convoy imports @myobie/pty from ../pty via a file: dependency)
+cd pty && npm install && npm run build && cd ..
+
+# install smalltalk + convoy
+( cd smalltalk && npm install )
+( cd convoy && npm install )
+
+# put st, pty, and convoy on your PATH — `npm link` in each repo, or symlink their
+# bin/ entrypoints (smalltalk/bin/st, pty/bin/pty, convoy/bin/convoy)
+```
+
+Then stand up a network:
+
+```sh
+convoy doctor                    # "will this work here?" — tools, bus, hooks, personas, PTY_ROOT length
+convoy init ~/nets/demo          # use a SHORT path: PTY_ROOT (<net>/pty) must be ≤ 90 bytes
+convoy cos --repo ~/cos --network ~/nets/demo   # bootstraps + boots a Chief of Staff (available in ~30s)
+```
+
+Run `convoy doctor` first — it fails loud on anything missing (a too-long network path, `st`/`pty` off PATH, undiscoverable hooks) instead of a cryptic error at spawn.
+
 ## Commands
 
 - `convoy add <role> --identity <id> [--mcp] [--network <path>] [--persona <path>] [--dry-run]` — add an agent, correct-by-construction. **Ding-only by default** (no MCP); `--mcp` opts into MCP wiring. Role → permission-mode/persona/posture are **derived**, never hand-set; wiring is dry-run-validated before launch.
