@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeConfigPath, pretrustDir } from "./trust.ts";
@@ -53,8 +53,19 @@ describe("pretrustDir (Claude Code workspace-trust pre-accept)", () => {
     expect(readFileSync(claudeConfigPath(), "utf8")).toBe(first); // no rewrite when nothing changes
   });
 
-  it("keys on the RESOLVED absolute path", () => {
-    pretrustDir("/repos/../repos/cos/."); // normalizes to /repos/cos
+  it("keys a non-existent path on its plain absolute form (realpath fallback)", () => {
+    pretrustDir("/repos/../repos/cos/."); // not on disk → falls back to resolve() → /repos/cos
     expect(Object.keys(readConfig().projects)).toContain("/repos/cos");
+  });
+
+  it("keys on the REAL path — resolves symlinks (the path Claude Code looks up)", () => {
+    const real = join(home, "realrepo");
+    const link = join(home, "linkrepo");
+    mkdirSync(real);
+    symlinkSync(real, link);
+    expect(pretrustDir(link)).toBe(true);
+    const keys = Object.keys(readConfig().projects);
+    expect(keys).toContain(realpathSync(real)); // trusted under the resolved real path
+    expect(keys).not.toContain(link); // NOT the symlinked literal path
   });
 });
