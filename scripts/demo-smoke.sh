@@ -2,12 +2,12 @@
 # Rehearse the demo happy path WITHOUT spawning persistent agents — verify each link is green
 # before going live. Uses a scratch network + scratch personas dir; cleans up after itself.
 #
-# Usage: scripts/demo-smoke.sh [path-to-convoy]   (defaults to .build/debug/convoy)
+# Usage: scripts/demo-smoke.sh [path-to-convoy]   (defaults to ./bin/convoy)
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
-CONVOY="${1:-.build/debug/convoy}"
-[ -x "$CONVOY" ] || { echo "building convoy…"; swift build --product convoy >/dev/null 2>&1; CONVOY=.build/debug/convoy; }
+CONVOY="${1:-./bin/convoy}"
+[ -x "$CONVOY" ] || { echo "convoy entrypoint not found/executable at $CONVOY (run npm install; see BUILD.md)"; exit 1; }
 
 WORK="$(mktemp -d)"
 export CONVOY_PERSONAS_DIR="$WORK/personas"
