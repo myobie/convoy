@@ -1,7 +1,37 @@
 // convoy CLI — hand-rolled argv dispatch (like pty's src/cli.ts). `ls` is the default subcommand.
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { down, up, type DownOptions, type UpOptions } from "./up.ts";
 import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdInit, cmdLs, cmdPersonas, cmdReload, cmdRemove, hasFlag, optValue, positionals } from "./commands.ts";
+import { run } from "./exec.ts";
+
+/** `<semver>` or `<semver>+<short-sha>` when a git sha is available. */
+export function formatVersion(semver: string, shortSha: string | null): string {
+  return shortSha ? `${semver}+${shortSha}` : semver;
+}
+
+/** The reported version: semver from package.json + the git short-sha of this checkout (from
+ *  `git rev-parse --short HEAD` at runtime), gracefully omitting the sha when it isn't a git checkout
+ *  (an installed package) or git isn't available. */
+async function versionString(): Promise<string> {
+  const root = dirname(dirname(fileURLToPath(import.meta.url))); // src/cli.ts → src → repo root
+  let semver = "0.0.0";
+  try {
+    semver = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version as string | undefined) ?? semver;
+  } catch {
+    // package.json unreadable — keep the fallback
+  }
+  let sha: string | null = null;
+  try {
+    const r = await run("git", ["rev-parse", "--short", "HEAD"], { cwd: root });
+    sha = r.ok ? r.stdout.trim() || null : null;
+  } catch {
+    // git missing or not a repo — omit the sha
+  }
+  return formatVersion(semver, sha);
+}
 
 export async function main(argv: string[]): Promise<void> {
   const cmd = argv[0];
@@ -36,7 +66,7 @@ export async function main(argv: string[]): Promise<void> {
       code = 0;
       break;
     case "--version":
-      process.stdout.write("0.2.0-ts.0\n");
+      process.stdout.write(`${await versionString()}\n`);
       code = 0;
       break;
     default:
