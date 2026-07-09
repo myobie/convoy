@@ -27,8 +27,10 @@ the wiring, correct-by-construction, and validates it before launch.** There is:
 | Concern              | Derived from        | Rule |
 |----------------------|---------------------|------|
 | `ST_AGENT`           | `--identity`        | always set to the identity; never hand-typed |
-| `CLAUDE_PERMISSION_MODE` | `--role`        | **spawner/CoS → `bypassPermissions`**; **worker → `auto`**. Never hand-chosen. |
+| `CLAUDE_PERMISSION_MODE` | `--role`        | **design table:** spawner/CoS → `bypassPermissions`; worker → `auto` (`role.ts permissionMode`). **INTERIM (current):** every agent launches `bypassPermissions` — unattended agents stall on permission prompts — applied at the spec layer (`specPermissionMode`), superseding the worker→auto row until the permission/hooks work lands. Never hand-chosen. |
 | `st.network` tag     | `--network`         | always tagged so the agent is findable on its bus |
+| session id           | `--prefix` + identity | pinned to `<prefix>.<agentShort>` (`.ding` for the sidecar); prefix defaults to the short hostname |
+| launch command       | derived             | **cold start**: `exec claude --permission-mode … '<boot prompt>'` — no `--resume`, no auto-poker; the boot prompt triggers the ritual |
 | MCP wiring           | `--mcp` (opt-in)    | `.mcp.json` references **`bin/st`** (the bus binary) |
 | ding sidecar         | default (ding)      | ding sidecar installed; no MCP block |
 | hooks                | role + network      | session-start boot ritual etc. wired automatically |

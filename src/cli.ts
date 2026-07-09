@@ -75,7 +75,7 @@ function printHelp(): void {
       "  ls (default)   list the convoy's members\n" +
       "  doctor         check that convoy can run here (tools, bus)\n" +
       "  init [dir]     create + wire a network (auto-clones personas)\n" +
-      "  add <role>     add an agent (correct-by-construction) [--identity --network --dir --mcp --permanent --dry-run]\n" +
+      "  add <role>     add an agent (correct-by-construction) [--identity --network --dir --mcp --permanent --prefix --dry-run]\n" +
       "  cos --repo <d> bootstrap a Chief of Staff\n" +
       "  up <network>   host a network in the foreground (TCC anchor + supervisor + flapping-cap)\n" +
       "  down [network] tear down the network — the ONLY path that kills sessions [--dry-run --force --json]\n" +
