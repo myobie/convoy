@@ -39,6 +39,6 @@ describe("Personas (ported from PersonasTests.swift)", () => {
   });
 
   it("clones the public personas repo (no auth needed)", () => {
-    expect(PERSONAS_REPO).toBe("https://github.com/myobie/personas.git");
+    expect(PERSONAS_REPO).toBe("https://github.com/compoundingtech/personas.git");
   });
 });

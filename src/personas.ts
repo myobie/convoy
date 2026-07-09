@@ -1,4 +1,4 @@
-// The base personas convoy installs (the public myobie/personas repo). Ported from Personas.swift:
+// The base personas convoy installs (the public compoundingtech/personas repo). Ported from Personas.swift:
 // if the repo isn't present, clone it rather than fail to resolve a role's persona (footgun-proof).
 
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
@@ -7,13 +7,13 @@ import { homedir } from "node:os";
 import { run } from "./exec.ts";
 import { personaBaseFilename, type Role } from "./role.ts";
 
-export const PERSONAS_REPO = "https://github.com/myobie/personas.git";
+export const PERSONAS_REPO = "https://github.com/compoundingtech/personas.git";
 
 /** Where role-base personas live: `$CONVOY_PERSONAS_DIR`, else the conventional repo path. */
 export function personasDir(): string {
   const env = process.env["CONVOY_PERSONAS_DIR"];
   if (env) return env;
-  return join(process.env["HOME"] ?? homedir(), "src/github.com/myobie/personas");
+  return join(process.env["HOME"] ?? homedir(), "src/github.com/compoundingtech/personas");
 }
 
 /** The base persona file for a role, if present on disk. */
