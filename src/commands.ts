@@ -55,6 +55,22 @@ async function whichCmd(cmd: string): Promise<string | null> {
   return r.ok ? r.stdout.trim() : null;
 }
 
+// pty caps PTY_ROOT at 90 bytes — the Unix-domain socket path (PTY_ROOT + sock name) must fit the
+// 104-byte kernel limit. A too-long network path fails cryptically at spawn ("session failed to
+// spawn"); doctor + init check it upfront so it fails EARLY with a clear message.
+export const PTY_ROOT_MAX_BYTES = 90;
+/** Resolve the absolute PTY_ROOT a network will use (`<network>/pty`) and check pty's 90-byte cap. */
+export function checkPtyRoot(networkRoot: string | null): { ptyRoot: string; bytes: number; ok: boolean } {
+  const ptyRoot = networkRoot
+    ? join(resolve(expandTilde(networkRoot)), "pty")
+    : process.env["PTY_ROOT"] ?? join(process.env["ST_ROOT"] ?? join(homedir(), ".local", "state", "smalltalk"), "pty");
+  const bytes = Buffer.byteLength(ptyRoot, "utf8");
+  return { ptyRoot, bytes, ok: bytes <= PTY_ROOT_MAX_BYTES };
+}
+export function pathTooLongMessage(bytes: number): string {
+  return `PTY_ROOT path is ${bytes} bytes, must be ${PTY_ROOT_MAX_BYTES} or fewer — pick a shorter network location.`;
+}
+
 // ---- the shared launch flow (Runner.launch) ----
 function printDerived(pf: ReturnType<typeof preflight>): void {
   out("derived wiring (correct-by-construction):");
@@ -130,6 +146,11 @@ export async function cmdDoctor(args: string[]): Promise<number> {
     failures++;
   }
 
+  out("Paths");
+  const pr = checkPtyRoot(network);
+  bullet(pr.ok, pr.ok ? `PTY_ROOT fits (${pr.bytes}/${PTY_ROOT_MAX_BYTES} bytes: ${pr.ptyRoot})` : pathTooLongMessage(pr.bytes));
+  if (!pr.ok) failures++;
+
   out("Personas");
   bullet(personasInstalled() ? true : null, personasInstalled() ? `base personas installed (${personasDir()})` : "base personas not installed — `convoy personas install` (auto-installed by add/cos)");
 
@@ -144,6 +165,13 @@ export async function cmdDoctor(args: string[]): Promise<number> {
 
 export async function cmdInit(args: string[]): Promise<number> {
   const dir = positionals(args)[0];
+  // Fail EARLY on a too-long network path — before creating anything — not cryptically at spawn.
+  const pr = checkPtyRoot(dir ?? null);
+  if (!pr.ok) {
+    err(pathTooLongMessage(pr.bytes));
+    err(`resolved PTY_ROOT would be ${pr.ptyRoot}`);
+    return 1;
+  }
   if (dir && !existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
     out(`created ${dir}`);
