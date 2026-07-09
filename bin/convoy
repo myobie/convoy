@@ -12,10 +12,13 @@ try {
   await main(process.argv.slice(2));
 } catch (err) {
   if (err && typeof err === "object" && "code" in err && err.code === "ERR_MODULE_NOT_FOUND") {
+    const detail = "message" in err ? String(err.message).split("\n")[0] : "a dependency is missing";
     console.error(
-      "convoy: couldn't load its dependencies — run `npm install` first.\n" +
-        "convoy depends on `@myobie/pty` via `file:../pty`, so the sibling `../pty` repo must also be " +
-        "checked out next to convoy. See BUILD.md.",
+      `convoy: failed to load — ${detail}.\n` +
+        "convoy depends on @myobie/pty via file:../pty, so build + install its deps first:\n" +
+        "  cd ../pty && npm install && npm run build   # build pty (required)\n" +
+        "  npm install                                 # in convoy\n" +
+        "See BUILD.md.",
     );
     process.exit(2);
   }
