@@ -1,8 +1,8 @@
-import { describe, it, expect } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { afterEach, beforeEach, describe, it, expect } from "vitest";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bootPrompt, claudeCommand, dingCommand, writePtyToml } from "./launch.ts";
+import { bootPrompt, claudeCommand, dingCommand, discoverSmalltalkDir, writePtyToml } from "./launch.ts";
 import type { AgentSpec } from "./agent-spec.ts";
 
 describe("native launch command builders (cold-start boot-prompt)", () => {
@@ -69,6 +69,39 @@ describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
       expect(toml).toContain("first-run interview");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("discoverSmalltalkDir (fresh-install hook discovery, no SMALLTALK_DIR needed)", () => {
+  const saved = process.env["SMALLTALK_DIR"];
+  afterEach(() => {
+    if (saved === undefined) delete process.env["SMALLTALK_DIR"];
+    else process.env["SMALLTALK_DIR"] = saved;
+  });
+
+  it("honors SMALLTALK_DIR when it holds the hook scripts", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-sm-"));
+    try {
+      mkdirSync(join(dir, "examples", "claude-code", "hooks"), { recursive: true });
+      writeFileSync(join(dir, "examples", "claude-code", "hooks", "session-start.sh"), "#!/bin/sh\n");
+      process.env["SMALLTALK_DIR"] = dir;
+      expect(discoverSmalltalkDir()).toBe(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores a SMALLTALK_DIR that lacks the hooks (falls through to st/sibling discovery)", () => {
+    const empty = mkdtempSync(join(tmpdir(), "convoy-sm-empty-"));
+    try {
+      process.env["SMALLTALK_DIR"] = empty;
+      const found = discoverSmalltalkDir();
+      // On any dev/CI box with `st` on PATH (or the sibling ../smalltalk), discovery still succeeds —
+      // and it must NOT be the hook-less env dir.
+      expect(found).not.toBe(empty);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
     }
   });
 });

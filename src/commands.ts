@@ -7,7 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { run } from "./exec.ts";
 import { Bus, isLive } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, type SupervisedSession } from "./host.ts";
-import { nativeLaunch } from "./launch.ts";
+import { discoverSmalltalkDir, nativeLaunch } from "./launch.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
 import { preflight, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
@@ -150,6 +150,16 @@ export async function cmdDoctor(args: string[]): Promise<number> {
   const pr = checkPtyRoot(network);
   bullet(pr.ok, pr.ok ? `PTY_ROOT fits (${pr.bytes}/${PTY_ROOT_MAX_BYTES} bytes: ${pr.ptyRoot})` : pathTooLongMessage(pr.bytes));
   if (!pr.ok) failures++;
+
+  out("Hooks");
+  const smalltalk = discoverSmalltalkDir();
+  bullet(
+    smalltalk !== null,
+    smalltalk !== null
+      ? `smalltalk hooks found (${smalltalk})`
+      : "smalltalk hooks NOT found — set SMALLTALK_DIR or put `st` on PATH; without them `convoy add`/`cos` can't spawn agents",
+  );
+  if (smalltalk === null) failures++;
 
   out("Personas");
   bullet(personasInstalled() ? true : null, personasInstalled() ? `base personas installed (${personasDir()})` : "base personas not installed — `convoy personas install` (auto-installed by add/cos)");

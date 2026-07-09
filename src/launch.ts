@@ -4,8 +4,8 @@
 // the Claude Code hooks, and the `st ding` sidecar. smalltalk keeps ONLY: the bus (`st`), the `st ding`
 // binary (spawned as a command, not imported), and the hook SCRIPTS (referenced by path).
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stringify as tomlStringify } from "smol-toml";
 import { spawnFromPtyFile } from "./host.ts";
@@ -28,30 +28,65 @@ export function bootPrompt(role: Role): string {
   return role === "chief-of-staff" ? BOOT_PROMPT_COS : BOOT_PROMPT_WORKER;
 }
 
-/** Where smalltalk's Claude Code hook scripts live (smalltalk keeps these; st launch is gone).
- *  SMALLTALK_DIR overrides; else the sibling `../smalltalk` repo (github.com/myobie layout). */
-function smalltalkDir(): string {
-  const env = process.env["SMALLTALK_DIR"];
-  if (env && existsSync(env)) return env;
-  const convoyRoot = dirname(dirname(fileURLToPath(import.meta.url))); // src/launch.ts → src → repo root
-  return join(convoyRoot, "..", "smalltalk");
+/** Find an executable by name on PATH (sync, no subprocess), or null. */
+function whichSync(cmd: string): string | null {
+  for (const dir of (process.env["PATH"] ?? "").split(delimiter)) {
+    if (!dir) continue;
+    try {
+      const p = join(dir, cmd);
+      if (statSync(p).isFile()) return p;
+    } catch {
+      // not in this dir
+    }
+  }
+  return null;
 }
 
-/** Resolve + validate the hook scripts + the st binary the hooks invoke. Throws loud if missing. */
+/** Does this dir hold smalltalk's Claude Code hook scripts? */
+function hasHooks(dir: string): boolean {
+  return existsSync(join(dir, "examples", "claude-code", "hooks", "session-start.sh"));
+}
+
+/** Discover the smalltalk repo (for its hook scripts + the `st` binary the hooks invoke), tolerating a
+ *  fresh install with NO `SMALLTALK_DIR` set. Order: (1) `SMALLTALK_DIR` env; (2) the `st` binary on
+ *  PATH — it lives at `<smalltalk>/bin/st`, so its resolved grandparent IS the repo (works for any user
+ *  who has `st` on PATH, which convoy requires anyway); (3) the sibling `../smalltalk` dev checkout.
+ *  Returns the first candidate that actually contains the hooks, else null. */
+export function discoverSmalltalkDir(): string | null {
+  const candidates: string[] = [];
+  const env = process.env["SMALLTALK_DIR"];
+  if (env) candidates.push(env);
+  const st = whichSync("st");
+  if (st) {
+    try {
+      candidates.push(dirname(dirname(realpathSync(st)))); // <smalltalk>/bin/st → <smalltalk>
+    } catch {
+      // unresolvable symlink — skip
+    }
+  }
+  candidates.push(join(dirname(dirname(fileURLToPath(import.meta.url))), "..", "smalltalk"));
+  for (const c of candidates) if (hasHooks(c)) return c;
+  return null;
+}
+
+/** Resolve the hook scripts + the st binary the hooks invoke. Throws loud (naming every discovery path)
+ *  if smalltalk can't be found — so a fresh install fails clearly, not silently at spawn. */
 function hookRefs(): { stBin: string; sessionStart: string; preCompact: string; stopFailure: string } {
-  const root = smalltalkDir();
+  const root = discoverSmalltalkDir();
+  if (root === null) {
+    throw new Error(
+      "smalltalk hook scripts not found. convoy looks via SMALLTALK_DIR, the `st` binary on PATH " +
+        "(<smalltalk>/bin/st), and the sibling ../smalltalk. Set SMALLTALK_DIR to your smalltalk clone, " +
+        "or make sure `st` is on PATH.",
+    );
+  }
   const hooks = join(root, "examples", "claude-code", "hooks");
-  const stBin = join(root, "bin", "st");
-  const refs = {
-    stBin,
+  return {
+    stBin: join(root, "bin", "st"),
     sessionStart: join(hooks, "session-start.sh"),
     preCompact: join(hooks, "pre-compact.sh"),
     stopFailure: join(hooks, "stop-failure.sh"),
   };
-  if (!existsSync(refs.sessionStart)) {
-    throw new Error(`smalltalk hook scripts not found at ${hooks} — set SMALLTALK_DIR to the smalltalk repo`);
-  }
-  return refs;
 }
 
 /** The agent's main claude session command: a COLD start — no `--resume`, no auto-poker — that hands
