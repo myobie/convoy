@@ -288,7 +288,7 @@ export async function cmdPersonas(args: string[]): Promise<number> {
 }
 
 export async function cmdAdd(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run"], ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--prefix"]);
+  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run"], ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--prefix", "--config-dir"]);
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy add\` — refusing rather than silently ignoring it. See \`convoy add --help\`.`);
     return 2;
@@ -328,6 +328,7 @@ export async function cmdAdd(args: string[]): Promise<number> {
     workingDir: optValue(args, "--dir"),
     permanentOverride: hasFlag(args, "--permanent") ? true : null,
     prefix: optValue(args, "--prefix"),
+    configDir: optValue(args, "--config-dir"),
   };
   out(`convoy add — ${identity}`);
   return launchSpec(spec, { dryRun: hasFlag(args, "--dry-run") });
@@ -348,7 +349,7 @@ async function ensureRepo(path: string, identity: string): Promise<void> {
 }
 
 export async function cmdCos(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run"], ["--repo", "--identity", "--transport", "--network", "--persona", "--prefix"]);
+  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run"], ["--repo", "--identity", "--transport", "--network", "--persona", "--prefix", "--config-dir"]);
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy cos\` — refusing rather than silently ignoring it. See \`convoy cos --help\`.`);
     return 2;
@@ -385,6 +386,7 @@ export async function cmdCos(args: string[]): Promise<number> {
     workingDir: absRepo,
     permanentOverride: null,
     prefix: optValue(args, "--prefix"),
+    configDir: optValue(args, "--config-dir"),
   };
   const rc = await launchSpec(spec, { dryRun });
   if (rc === 0 && !dryRun) out("The CoS will run its first-run interview on boot.");
