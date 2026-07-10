@@ -42,12 +42,12 @@ cd pty && npm install && npm run build && cd ..
 Then stand up a network:
 
 ```sh
-convoy doctor                    # "will this work here?" — tools, bus, hooks, personas, PTY_ROOT length
+convoy doctor --quick            # fast preflight: tools, bus, hooks (incl /compact-safety), personas, PTY_ROOT length
 convoy init ~/nets/demo          # use a SHORT path: PTY_ROOT (<net>/pty) must be ≤ 90 bytes
 convoy cos --repo ~/cos --network ~/nets/demo   # bootstraps + boots a Chief of Staff (available in ~30s)
 ```
 
-Run `convoy doctor` first — it fails loud on anything missing (a too-long network path, `st`/`pty` off PATH, undiscoverable hooks) instead of a cryptic error at spawn.
+Run `convoy doctor --quick` first — the preflight fails loud on anything missing (a too-long network path, `st`/`pty` off PATH, undiscoverable hooks, a `/compact`-breaking hook) instead of a cryptic error at spawn. Then, when you want proof the whole thing works, run the full `convoy doctor` (below).
 
 ## Commands
 
@@ -58,7 +58,7 @@ Run `convoy doctor` first — it fails loud on anything missing (a too-long netw
 - `convoy down [network] [--dry-run] [--force] [--json]` — **tear down the network**: the *only* command that kills sessions. Refuses while a `convoy up` host holds the network (it would respawn what you kill) unless `--force`.
 - `convoy reload <id> [--dry-run]` — re-materialize an agent from its `pty.toml` (kill + respawn), picking up edits to its permission-mode / persona / ding wiring.
 - `convoy init [dir]` — create + wire a smalltalk network folder (ST_ROOT, bus layout, hooks).
-- `convoy doctor` — the "will this actually work here?" check: tools installed, config sane, the bus round-trips, personas present.
+- `convoy doctor [--quick]` — the **setup-readiness suite**: proves your machine can do real agent work. A fast **preflight gate** (`st`/`pty` on PATH, bus round-trips, PTY_ROOT length, hooks discoverable + `/compact`-safe, personas present) — `--quick` stops here — then the full **readiness checks**, each spun in an isolated throwaway network that never touches your prod network (it snapshots prod pty sessions before/after and asserts zero delta): a tmp network stands up + tears down; inbox+ding delivery works end-to-end; agent state externalizes + is reconstructed after a cold restart; inbox processing stays exactly-once across a restart; and a CoS→supervisor→worker tree fixes a real bundled bug, graded held-out (the fix behaves + is mutation-valid, delegation is visible on the bus, only the worker commits). Every check is self-cleaning; failures are named + actionable. The full run spins real agents (minutes); `--quick` is instant.
 - `convoy ls [--live-only]` — list the convoy's members.
 - `convoy personas <status|install>` — the base personas convoy installs for roles. `init`/`add`/`cos` auto-install them if missing (footgun-proof setup); this is explicit control.
 - `convoy app <install|status>` — manage the `Convoy.app` menubar host (non-brew install path).
