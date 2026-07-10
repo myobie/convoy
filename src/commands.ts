@@ -34,6 +34,14 @@ export function hasFlag(args: string[], ...names: string[]): boolean {
   return names.some((n) => args.includes(n));
 }
 
+/** The effective network root: `--network` if given, else the ambient `ST_ROOT`. Falling back to
+ *  ST_ROOT keeps the pty sessions (agent + ding sidecar) in the SAME root as the bus. Without it, a bare
+ *  `convoy add` under an isolated ST_ROOT registers the agent on the isolated bus but leaks its pty
+ *  sessions to the global pty root — inconsistent isolation that `convoy down` can't then reap. */
+export function resolveNetworkRoot(cliNetwork: string | null): string | null {
+  return cliNetwork ?? process.env["ST_ROOT"] ?? null;
+}
+
 function out(s = ""): void {
   process.stdout.write(`${s}\n`);
 }
@@ -258,7 +266,7 @@ export async function cmdAdd(args: string[]): Promise<number> {
     role,
     identity,
     transport,
-    networkRoot: optValue(args, "--network"),
+    networkRoot: resolveNetworkRoot(optValue(args, "--network")),
     personaOverride: optValue(args, "--persona"),
     workingDir: optValue(args, "--dir"),
     permanentOverride: hasFlag(args, "--permanent") ? true : null,
@@ -310,7 +318,7 @@ export async function cmdCos(args: string[]): Promise<number> {
     role: "chief-of-staff",
     identity,
     transport,
-    networkRoot: optValue(args, "--network"),
+    networkRoot: resolveNetworkRoot(optValue(args, "--network")),
     personaOverride: optValue(args, "--persona"),
     workingDir: absRepo,
     permanentOverride: null,
