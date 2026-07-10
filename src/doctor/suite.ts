@@ -139,6 +139,7 @@ export async function runReadinessSuite(): Promise<number> {
   results.push(await checkTmpNetwork());
   results.push(await checkDings());
   results.push(await checkStateExternalization());
+  results.push(await checkExactlyOnce());
   // checkDings + checkDevTask land next.
 
   // Prod-untouched gate — the isolation proof.
@@ -300,6 +301,72 @@ export async function checkStateExternalization(): Promise<CheckResult> {
     }
 
     return { name, pass: true, detail: "externalized now.md → cold-boot (no --resume) → SessionStart hook reconstructed the task + the agent acted on it, all isolated" };
+  } finally {
+    await teardownSandbox(box);
+  }
+}
+
+/** How many lines of `haystack` contain `needle`. */
+function countOccurrences(haystack: string, needle: string): number {
+  return haystack.split("\n").filter((l) => l.includes(needle)).length;
+}
+
+/** The recipient's inbox count on the sandbox bus (NaN on error). */
+async function inboxCount(box: Sandbox, id: string): Promise<number> {
+  const c = await runSt(box, ["message", "ls", id, "--count"]);
+  return c.ok ? parseCount(c.stdout) : Number.NaN;
+}
+
+/** CHECK 2b — exactly-once inbox processing across a restart (the double-act guard). Vendored from evals'
+ *  inbox-hygiene eval. The agent appends each new message's token to PROCESSED.log EXACTLY once (check-
+ *  before-append + archive-on-act). We process a message, then RE-DELIVER the same message un-archived and
+ *  COLD-restart: on the boot re-drain the agent must recognize it already acted and NOT re-append — so the
+ *  token stays at count 1. count>1 = a re-drain doubles actions (double-send/delegate/merge risk); held-out
+ *  (counts a durable side-effect, never a self-report). */
+export async function checkExactlyOnce(): Promise<CheckResult> {
+  const name = "exactly-once inbox processing (restart double-act guard)";
+  let box: Sandbox;
+  try {
+    box = makeSandbox("xo");
+  } catch (e) {
+    return { name, pass: false, detail: e instanceof Error ? e.message : String(e), fix: "set TMPDIR to a shorter path (pty sockets must fit ~104 bytes)" };
+  }
+  try {
+    const init = await runConvoy(box, ["init", box.net, "--no-channel"]);
+    if (!init.ok) return { name, pass: false, detail: `convoy init failed: ${init.stderr.trim() || init.stdout.trim()}`, fix: "run `convoy doctor --quick`" };
+
+    const xoDir = join(box.sb, "doctor-xo"); // basename == identity so `convoy reload` matches it
+    mkdirSync(xoDir, { recursive: true });
+    const logPath = join(xoDir, "PROCESSED.log");
+    writeFileSync(logPath, ""); // empty ledger — the countable side-effect
+    const add = await runConvoy(box, ["add", "worker", "--identity", "doctor-xo", "--network", box.net, "--dir", xoDir, "--persona", fixture("exactly-once-persona.md")]);
+    if (!add.ok) return { name, pass: false, detail: `convoy add failed: ${add.stderr.trim() || add.stdout.trim()}`, fix: "spawn failed — `convoy doctor --quick`" };
+
+    const avail = await pollUntil(async () => (await runSt(box, ["status", "doctor-xo"])).stdout.trim() === "available", 120_000);
+    if (!avail) return { name, pass: false, detail: "agent never became available (didn't boot)", fix: "the agent didn't boot — check claude auth (`/login`)" };
+
+    const token = `XO-${process.pid}-${box.sb.slice(-6)}`;
+    // 1st delivery: the agent should append the token once + archive.
+    const send1 = await runSt(box, ["message", "send", "doctor-xo", "-m", token]);
+    if (!send1.ok) return { name, pass: false, detail: `st message send failed: ${send1.stderr.trim()}`, fix: "the bus rejected the message — check `st` on PATH" };
+    const processed = await pollUntil(async () => existsSync(logPath) && countOccurrences(readFileSync(logPath, "utf8"), token) >= 1 && (await inboxCount(box, "doctor-xo")) === 0, 150_000);
+    if (!processed) return { name, pass: false, detail: "agent never processed the first delivery (token not appended or inbox not drained)", fix: "the agent didn't act on its ding — check `convoy doctor` checks 2/4" };
+
+    // Restart leg: re-deliver the SAME message un-archived, cold-restart, and demand it NOT re-act.
+    const send2 = await runSt(box, ["message", "send", "doctor-xo", "-m", token]);
+    if (!send2.ok) return { name, pass: false, detail: `re-delivery send failed: ${send2.stderr.trim()}`, fix: "check `st` on PATH" };
+    const reload = await runConvoy(box, ["reload", "doctor-xo", "--network", box.net]);
+    if (!reload.ok) return { name, pass: false, detail: `cold-restart (convoy reload) failed: ${reload.stderr.trim() || reload.stdout.trim()}`, fix: "check `convoy reload`" };
+    const reDrained = await pollUntil(async () => (await inboxCount(box, "doctor-xo")) === 0, 180_000);
+
+    const finalCount = countOccurrences(readFileSync(logPath, "utf8"), token);
+    if (finalCount > 1) {
+      return { name, pass: false, detail: `DOUBLE-ACT: token appears ${finalCount}× in PROCESSED.log (want exactly 1) — the agent re-acted on a re-surfaced message after restart`, fix: "resume-safety is broken — an inbox re-drain doubles actions (double-send / double-delegate / double-merge). The DING-BUS 'archive-on-act + don't re-act on a re-drained item' guard isn't holding" };
+    }
+    if (finalCount < 1) return { name, pass: false, detail: "token never landed in PROCESSED.log", fix: "the agent didn't act — check checks 2/4" };
+    if (!reDrained) return { name, pass: false, detail: "after restart the agent didn't re-drain the re-delivered message (inbox stayed non-empty)", fix: "the cold-booted agent didn't process its inbox — check the SessionStart boot ritual (check 4)" };
+
+    return { name, pass: true, detail: "processed once → re-delivered + cold-restarted → re-drained WITHOUT re-acting (token exactly once), all isolated" };
   } finally {
     await teardownSandbox(box);
   }
