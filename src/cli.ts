@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { down, up, type DownOptions, type UpOptions } from "./up.ts";
-import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdInit, cmdLs, cmdPersonas, cmdReload, cmdRemove, hasFlag, optValue, positionals, unknownFlag } from "./commands.ts";
+import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdInit, cmdLs, cmdPersonas, cmdPretrust, cmdReload, cmdRemove, hasFlag, optValue, positionals, unknownFlag } from "./commands.ts";
 import { run } from "./exec.ts";
 
 /** Reject the first flag `convoy <name>` doesn't honor (rc=2) instead of silently ignoring it. */
@@ -63,6 +63,7 @@ export async function main(argv: string[]): Promise<void> {
     case "add": code = await cmdAdd(rest); break;
     case "remove": code = await cmdRemove(rest); break;
     case "reload": code = await cmdReload(rest); break;
+    case "pretrust": code = await cmdPretrust(rest); break;
     case "cos": code = await cmdCos(rest); break;
     case "up": code = await cmdUp(rest); break;
     case "down": code = await cmdDown(rest); break;
@@ -123,6 +124,7 @@ function printHelp(): void {
       "  down [network] tear down the network — the ONLY path that kills sessions [--dry-run --force --json]\n" +
       "  remove <id>    remove an agent\n" +
       "  reload <id>    re-materialize an agent from its pty.toml (kill + respawn, cold-boot) [--dry-run]\n" +
+      "  pretrust <dir>... batch pre-trust agent dirs before spawning many back-to-back (avoids the trust race) [--config-dir]\n" +
       "  personas <status|install>\n" +
       "  app <status>\n",
   );

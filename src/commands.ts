@@ -13,6 +13,7 @@ import { runReadinessSuite } from "./doctor/suite.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
 import { preflight, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
+import { claudeConfigPath, pretrustDirs } from "./trust.ts";
 
 // ---- arg helpers ----
 export function positionals(args: string[]): string[] {
@@ -493,6 +494,36 @@ export async function cmdReload(args: string[]): Promise<number> {
   for (const n of failed) out(`✗ failed ${n}`);
   out(`✓ reloaded ${identity} from pty.toml.`);
   return failed.length > 0 ? 1 : 0;
+}
+
+/** `convoy pretrust <dir> [<dir>...] [--config-dir <path>]` — batch pre-trust agent working dirs in one atomic
+ *  write, so a caller spawning MULTIPLE agents back-to-back doesn't hit the workspace-trust RACE (a sibling's
+ *  booting Claude clobbers a later sibling's just-written trust entry). Call it ONCE with every dir before the
+ *  first `convoy add`. Config-dir-agnostic by default (writes the ambient ~/.claude.json); pass --config-dir
+ *  only when those agents will run under CLAUDE_CONFIG_DIR=<path> (then it writes <path>/.claude.json). */
+export async function cmdPretrust(args: string[]): Promise<number> {
+  const bad = unknownFlag(args, [], ["--config-dir"]);
+  if (bad) {
+    err(`unrecognized flag "${bad}" for \`convoy pretrust\`. Usage: convoy pretrust <dir> [<dir>...] [--config-dir <path>].`);
+    return 2;
+  }
+  const dirs = positionals(args);
+  if (dirs.length === 0) {
+    err("missing dir. Usage: convoy pretrust <dir> [<dir>...] [--config-dir <path>]");
+    return 2;
+  }
+  const configDir = optValue(args, "--config-dir");
+  const abs = dirs.map((d) => resolve(expandTilde(d)));
+  for (const d of abs) if (!existsSync(d)) err(`warning: ${d} does not exist yet — create it before pre-trusting so the realpath matches (proceeding on the literal path)`);
+  const cfgPath = configDir ? `${resolve(expandTilde(configDir))}/.claude.json` : claudeConfigPath();
+  const { trusted, failed } = pretrustDirs(abs, configDir ? resolve(expandTilde(configDir)) : undefined);
+  for (const t of trusted) out(`  ✓ ${t}`);
+  if (failed.length > 0) {
+    err(`could not write pre-trust for ${failed.length} dir(s) — check ${cfgPath} is readable + writable`);
+    return 1;
+  }
+  out(`✓ pre-trusted ${trusted.length} dir(s) in ${cfgPath}. Safe to spawn them back-to-back now.`);
+  return 0;
 }
 
 export async function cmdApp(args: string[]): Promise<number> {

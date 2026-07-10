@@ -4,6 +4,8 @@
 // Built on the NATIVE host (src/host.ts, @myobie/pty/client) + the §5 classifier (src/flapping-cap.ts).
 
 import { homedir } from "node:os";
+import { dirname } from "node:path";
+import { pretrustDirs } from "./trust.ts";
 import {
   classify,
   effectiveLimit,
@@ -70,6 +72,24 @@ export async function up(opts: UpOptions): Promise<number> {
     { type: "up", network: root, reconcileInterval: interval },
     `hosting ${root} (reconcile every ${interval}s, cap ${effectiveLimit(null, cliLimit)} fails / ${effectiveWindow(null, cliWindow)}s)`,
   );
+
+  // Up-scope batch pre-trust: mark every member's workspace trusted BEFORE the reconcile loop respawns any of
+  // them, so an initial multi-session bring-up (all permanents gone) or a post-crash multi-respawn never races
+  // the workspace-trust lost-update (a sibling's booting Claude clobbers another's just-written entry — see
+  // src/trust.ts). One idempotent atomic write, up front. This is the convoy-core half of the fix; a caller
+  // spawning agents outside `convoy up` uses `convoy pretrust <dirs>` before its back-to-back `convoy add`s.
+  {
+    const dirs = new Set<string>();
+    for (const s of await host.sessions()) {
+      const pf = s.tags["ptyfile"];
+      const dir = pf ? dirname(pf) : s.cwd || null;
+      if (dir) dirs.add(dir);
+    }
+    if (dirs.size > 0) {
+      const { trusted } = pretrustDirs([...dirs]);
+      emit({ type: "pretrust", network: root, dirs: trusted.length }, `[convoy-up] pre-trusted ${trusted.length} member dir(s) before reconcile`);
+    }
+  }
 
   // Classifier state keyed on the pty id; permanence remembered (pty kill strips the strategy tag).
   const state = new Map<string, StrategyTags>();

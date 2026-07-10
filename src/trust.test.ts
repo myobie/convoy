@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeConfigPath, pretrustDir } from "./trust.ts";
+import { claudeConfigPath, pretrustDir, pretrustDirs } from "./trust.ts";
 
 describe("pretrustDir (Claude Code workspace-trust pre-accept)", () => {
   const savedHome = process.env["HOME"];
@@ -67,5 +67,48 @@ describe("pretrustDir (Claude Code workspace-trust pre-accept)", () => {
     const keys = Object.keys(readConfig().projects);
     expect(keys).toContain(realpathSync(real)); // trusted under the resolved real path
     expect(keys).not.toContain(link); // NOT the symlinked literal path
+  });
+
+  // ---- pretrustDirs: the batch primitive behind `convoy pretrust` / convoy-up up-scope pre-trust ----
+
+  it("batch: marks EVERY dir trusted + onboarded in one write (the multi-spawn race fix)", () => {
+    const dirs = ["a", "b", "c"].map((n) => {
+      const d = join(home, n);
+      mkdirSync(d);
+      return d;
+    });
+    const { trusted, failed } = pretrustDirs(dirs);
+    expect(failed).toEqual([]);
+    expect(trusted.length).toBe(3);
+    const projects = readConfig().projects;
+    for (const d of dirs) {
+      const e = projects[realpathSync(d)];
+      expect(e.hasTrustDialogAccepted).toBe(true);
+      expect(e.hasCompletedProjectOnboarding).toBe(true);
+    }
+  });
+
+  it("batch: merges — an earlier project's trust survives a later batch (no lost-update)", () => {
+    const a = join(home, "a");
+    mkdirSync(a);
+    pretrustDirs([a]);
+    const b = join(home, "b");
+    mkdirSync(b);
+    pretrustDirs([b]);
+    const projects = readConfig().projects;
+    expect(projects[realpathSync(a)].hasTrustDialogAccepted).toBe(true); // NOT dropped by b's write
+    expect(projects[realpathSync(b)].hasTrustDialogAccepted).toBe(true);
+  });
+
+  it("batch: --config-dir target writes <configDir>/.claude.json, leaving the ambient config untouched", () => {
+    const a = join(home, "a");
+    mkdirSync(a);
+    const cfgDir = join(home, "cfg");
+    mkdirSync(cfgDir);
+    pretrustDirs([a], cfgDir);
+    const relocated = JSON.parse(readFileSync(join(cfgDir, ".claude.json"), "utf8"));
+    expect(relocated.projects[realpathSync(a)].hasTrustDialogAccepted).toBe(true);
+    // the ambient ~/.claude.json was never created for this
+    expect(() => readConfig()).toThrow();
   });
 });
