@@ -1,5 +1,37 @@
 import { afterEach, describe, it, expect } from "vitest";
-import { checkPtyRoot, pathTooLongMessage, PTY_ROOT_MAX_BYTES, resolveNetworkRoot } from "./commands.ts";
+import { checkPtyRoot, optValue, pathTooLongMessage, positionals, PTY_ROOT_MAX_BYTES, resolveNetworkRoot, unknownFlag } from "./commands.ts";
+
+describe("arg parsing: --flag=value form (silent-default trap)", () => {
+  it("optValue reads both `--name value` and `--name=value`", () => {
+    expect(optValue(["--harness", "codex"], "--harness")).toBe("codex");
+    expect(optValue(["--harness=codex"], "--harness")).toBe("codex"); // was null → silently defaulted
+    expect(optValue(["--identity=abc-1"], "--identity")).toBe("abc-1");
+    expect(optValue(["--identity"], "--identity")).toBeNull(); // flag with no value
+    expect(optValue(["role"], "--identity")).toBeNull();
+  });
+  it("positionals skips inline `--flag=value` without eating the next token", () => {
+    expect(positionals(["worker", "--harness=codex", "--identity", "x"])).toEqual(["worker"]);
+    expect(positionals(["worker", "--mcp", "extra"])).toEqual(["worker", "extra"]); // bool eats nothing
+    expect(positionals(["worker", "--network", "/n"])).toEqual(["worker"]); // value flag eats /n
+  });
+});
+
+describe("unknownFlag (reject silently-ignored flags — footgun #3)", () => {
+  const bool = ["--mcp", "--permanent", "--dry-run"];
+  const value = ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--prefix"];
+  it("flags an unrecognized flag (e.g. --no-hooks accepted rc=0 but ignored)", () => {
+    expect(unknownFlag(["worker", "--identity", "x", "--no-hooks"], bool, value)).toBe("--no-hooks");
+    expect(unknownFlag(["--bogus", "y", "--identity", "z"], bool, value)).toBe("--bogus");
+  });
+  it("accepts every recognized flag (bool + value, space + = forms) → null", () => {
+    expect(unknownFlag(["worker", "--identity", "x", "--mcp", "--dry-run", "--harness", "codex"], bool, value)).toBeNull();
+    expect(unknownFlag(["--harness=codex", "--identity=x", "--permanent"], bool, value)).toBeNull();
+  });
+  it("does not mistake a value token for an unknown flag", () => {
+    // --network's value could itself start with '-' only if quoted; normal values are skipped
+    expect(unknownFlag(["worker", "--network", "/tmp/n", "--identity", "wk"], bool, value)).toBeNull();
+  });
+});
 
 describe("resolveNetworkRoot (no-leak: pty scope follows the bus scope)", () => {
   const saved = process.env["ST_ROOT"];

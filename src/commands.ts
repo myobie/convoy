@@ -18,7 +18,8 @@ export function positionals(args: string[]): string[] {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a.startsWith("--")) {
-      if (!BOOL_FLAGS.has(a)) i++; // skip the value of a value-option
+      if (a.includes("=") || BOOL_FLAGS.has(a)) continue; // `--flag=value` (inline) or a bool: consumes no next token
+      i++; // value-option: skip its value
     } else if (!a.startsWith("-")) {
       out.push(a);
     }
@@ -26,12 +27,40 @@ export function positionals(args: string[]): string[] {
   return out;
 }
 const BOOL_FLAGS = new Set(["--dry-run", "--yes", "-y", "--mcp", "--permanent", "--purge", "--json", "--live-only", "--no-channel", "--force"]);
+/** Value of `--name` — supports both `--name value` and `--name=value` (the `=` form previously fell
+ *  through and silently defaulted, e.g. `--harness=codex` → claude). */
 export function optValue(args: string[], name: string): string | null {
-  const i = args.indexOf(name);
-  return i >= 0 && i + 1 < args.length ? args[i + 1]! : null;
+  const eq = `${name}=`;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === name) return i + 1 < args.length ? args[i + 1]! : null;
+    if (a.startsWith(eq)) return a.slice(eq.length);
+  }
+  return null;
 }
 export function hasFlag(args: string[], ...names: string[]): boolean {
   return names.some((n) => args.includes(n));
+}
+
+/** The first `-…` token in `args` that isn't a recognized flag (else null) — so a command can REJECT a
+ *  mistyped/unsupported flag instead of silently ignoring it (the silent-false-flag footgun: e.g.
+ *  `--no-hooks` returned rc=0 but was ignored). `bool` flags stand alone; `value` flags take the next
+ *  token or an inline `--flag=value`. */
+export function unknownFlag(args: string[], bool: string[], value: string[]): string | null {
+  const boolSet = new Set(bool);
+  const valueSet = new Set(value);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (!a.startsWith("-")) continue; // positional
+    const name = a.includes("=") ? a.slice(0, a.indexOf("=")) : a;
+    if (boolSet.has(name)) continue;
+    if (valueSet.has(name)) {
+      if (!a.includes("=")) i++; // space-separated value — skip its token
+      continue;
+    }
+    return a; // unrecognized
+  }
+  return null;
 }
 
 /** The effective network root: `--network` if given, else the ambient `ST_ROOT`. Falling back to
@@ -236,6 +265,11 @@ export async function cmdPersonas(args: string[]): Promise<number> {
 }
 
 export async function cmdAdd(args: string[]): Promise<number> {
+  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run"], ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--prefix"]);
+  if (bad) {
+    err(`unrecognized flag "${bad}" for \`convoy add\` — refusing rather than silently ignoring it. See \`convoy add --help\`.`);
+    return 2;
+  }
   const roleRaw = positionals(args)[0];
   if (!roleRaw) {
     err("missing role. Usage: convoy add <role> --identity <id>");
@@ -291,6 +325,11 @@ async function ensureRepo(path: string, identity: string): Promise<void> {
 }
 
 export async function cmdCos(args: string[]): Promise<number> {
+  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run"], ["--repo", "--identity", "--transport", "--network", "--persona", "--prefix"]);
+  if (bad) {
+    err(`unrecognized flag "${bad}" for \`convoy cos\` — refusing rather than silently ignoring it. See \`convoy cos --help\`.`);
+    return 2;
+  }
   const repoArg = optValue(args, "--repo");
   if (!repoArg) {
     err("--repo is required");
