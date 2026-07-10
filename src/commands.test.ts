@@ -1,5 +1,26 @@
-import { describe, it, expect } from "vitest";
-import { checkPtyRoot, pathTooLongMessage, PTY_ROOT_MAX_BYTES } from "./commands.ts";
+import { afterEach, describe, it, expect } from "vitest";
+import { checkPtyRoot, pathTooLongMessage, PTY_ROOT_MAX_BYTES, resolveNetworkRoot } from "./commands.ts";
+
+describe("resolveNetworkRoot (no-leak: pty scope follows the bus scope)", () => {
+  const saved = process.env["ST_ROOT"];
+  afterEach(() => {
+    if (saved === undefined) delete process.env["ST_ROOT"];
+    else process.env["ST_ROOT"] = saved;
+  });
+
+  it("--network wins over ST_ROOT", () => {
+    process.env["ST_ROOT"] = "/isolated";
+    expect(resolveNetworkRoot("/explicit")).toBe("/explicit");
+  });
+  it("falls back to ST_ROOT when no --network (so the sidecar isn't left in the global pty root)", () => {
+    process.env["ST_ROOT"] = "/isolated";
+    expect(resolveNetworkRoot(null)).toBe("/isolated");
+  });
+  it("is null when neither --network nor ST_ROOT is set (ambient default)", () => {
+    delete process.env["ST_ROOT"];
+    expect(resolveNetworkRoot(null)).toBeNull();
+  });
+});
 
 describe("PTY_ROOT path-length validation (FIX 1)", () => {
   it("accepts a short absolute network path", () => {
