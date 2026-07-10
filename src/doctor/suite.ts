@@ -7,7 +7,7 @@
 // Isolation + graded-run patterns are cribbed from evals' fixtures (ghost-bug / team-standup), vendored so
 // doctor is self-contained on a user machine (no evals-repo dependency at runtime).
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -138,6 +138,7 @@ export async function runReadinessSuite(): Promise<number> {
   const results: CheckResult[] = [];
   results.push(await checkTmpNetwork());
   results.push(await checkDings());
+  results.push(await checkStateExternalization());
   // checkDings + checkDevTask land next.
 
   // Prod-untouched gate — the isolation proof.
@@ -228,6 +229,77 @@ export async function checkDings(): Promise<CheckResult> {
     }
 
     return { name, pass: true, detail: "sent a message → ding poked the recipient → it drained its inbox, all isolated" };
+  } finally {
+    await teardownSandbox(box);
+  }
+}
+
+/** Name the likely reason state didn't reconstruct — the actionable payoff of check 4. */
+function hookBlockerFix(agentDir: string): string {
+  const settings = join(agentDir, ".claude", "settings.local.json");
+  const hasHook = existsSync(settings) && readFileSync(settings, "utf8").includes("SessionStart");
+  if (!hasHook) {
+    return "the agent has no SessionStart hook wired (convoy add writes .claude/settings.local.json) — reinstall/upgrade convoy or check SMALLTALK_DIR";
+  }
+  const globalCfg = join(process.env["HOME"] ?? "", ".claude.json");
+  let globalHint = "";
+  try {
+    const g = JSON.parse(readFileSync(globalCfg, "utf8")) as Record<string, unknown>;
+    if (g["disableAllHooks"] === true || g["hooksDisabled"] === true) globalHint = " (~/.claude.json disables hooks globally)";
+  } catch {
+    // best-effort
+  }
+  return `the SessionStart hook is wired but did not fire${globalHint} — a global agent-config or policy override is blocking it, so agent state won't externalize and agents won't survive a restart. Re-enable SessionStart hooks (check ~/.claude.json + any managed settings/policy)`;
+}
+
+/** CHECK 4 (the restartability thesis) — state externalization. Spawn an agent, externalize durable
+ *  work-state (seed context/now.md with a resume task), COLD-restart it (no --resume), and assert it
+ *  RECONSTRUCTS that state via the SessionStart hook (which injects now.md) and acts on it. If the hook is
+ *  blocked (globally-disabled hooks / a settings-or-policy override), reconstruction silently never happens
+ *  and agents won't survive a restart — this NAMES that cause. */
+export async function checkStateExternalization(): Promise<CheckResult> {
+  const name = "state externalization / restartability";
+  let box: Sandbox;
+  try {
+    box = makeSandbox("sx");
+  } catch (e) {
+    return { name, pass: false, detail: e instanceof Error ? e.message : String(e), fix: "set TMPDIR to a shorter path (pty sockets must fit ~104 bytes)" };
+  }
+  try {
+    const init = await runConvoy(box, ["init", box.net, "--no-channel"]);
+    if (!init.ok) return { name, pass: false, detail: `convoy init failed: ${init.stderr.trim() || init.stdout.trim()}`, fix: "run `convoy doctor --quick`" };
+
+    const sxDir = join(box.sb, "doctor-sx"); // dir basename == identity so `convoy reload` matches it
+    mkdirSync(sxDir, { recursive: true });
+    const add = await runConvoy(box, ["add", "worker", "--identity", "doctor-sx", "--network", box.net, "--dir", sxDir, "--persona", fixture("worker-persona.md")]);
+    if (!add.ok) return { name, pass: false, detail: `convoy add failed: ${add.stderr.trim() || add.stdout.trim()}`, fix: "spawn failed — `convoy doctor --quick`" };
+
+    const avail = await pollUntil(async () => (await runSt(box, ["status", "doctor-sx"])).stdout.trim() === "available", 120_000);
+    if (!avail) return { name, pass: false, detail: "agent never became available (didn't boot)", fix: "the agent didn't boot — check claude auth (`/login`)" };
+
+    // Externalize durable work-state: seed now.md with a resume task the reconstructed agent will act on.
+    const token = `SX-${process.pid}-${box.sb.slice(-6)}`;
+    const logPath = join(sxDir, "RECONSTRUCTED.log");
+    const nowMd = join(box.net, "doctor-sx", "context", "now.md");
+    mkdirSync(dirname(nowMd), { recursive: true });
+    writeFileSync(
+      nowMd,
+      `# Current task (durable working state)\n\nYou were restarted mid-task. Your ONE resumed task: run this shell command EXACTLY, then stand by:\n\n    echo "${token}" >> "${logPath}"\n\nDo it now if RECONSTRUCTED.log does not already contain that token.\n`,
+    );
+
+    // Cold-restart the agent (no --resume) via `convoy reload` — kills + respawns from the pty.toml. Unlike
+    // `pty restart -y`, it never tries to ATTACH, so it works even when doctor itself runs INSIDE a pty
+    // session (an agent, or a nested shell). The respawn re-fires the SessionStart hook → it injects now.md.
+    const restart = await runConvoy(box, ["reload", "doctor-sx", "--network", box.net]);
+    if (!restart.ok) return { name, pass: false, detail: `cold-restart (convoy reload) failed: ${restart.stderr.trim() || restart.stdout.trim()}`, fix: "check `convoy reload` / the pty respawn path" };
+
+    // Reconstruction: the cold-booted agent must pick up now.md (via the hook) + do the task.
+    const reconstructed = await pollUntil(async () => existsSync(logPath) && readFileSync(logPath, "utf8").includes(token), 180_000);
+    if (!reconstructed) {
+      return { name, pass: false, detail: "the cold-booted agent did NOT reconstruct its work-state from now.md — the SessionStart hook did not inject it (no --resume was used, so externalization is the only path)", fix: hookBlockerFix(sxDir) };
+    }
+
+    return { name, pass: true, detail: "externalized now.md → cold-boot (no --resume) → SessionStart hook reconstructed the task + the agent acted on it, all isolated" };
   } finally {
     await teardownSandbox(box);
   }
