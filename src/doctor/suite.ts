@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isGone } from "@myobie/pty/client";
 import { run } from "../exec.ts";
+import { pretrustDir } from "../trust.ts";
 
 /** A file bundled under src/doctor/fixtures/, resolved from this module (works from an installed pkg). */
 function fixture(...parts: string[]): string {
@@ -81,14 +82,24 @@ export async function ptySessionNames(env?: NodeJS.ProcessEnv): Promise<Set<stri
   }
 }
 
-/** Tear the sandbox down: kill its sessions (convoy down --force) then remove the dir. Best-effort. */
+/** Tear the sandbox down: kill its sessions (convoy down --force), wait for the pty daemon to actually let go,
+ *  then remove the dir. Best-effort. The wait matters for self-cleaning: `convoy down` returns before the pty
+ *  daemon finishes flushing its registry files, so a bare rmSync races a lagging write that would recreate
+ *  `<net>/pty/*.json` right after we deleted the tree — leaving a leftover dir. Polling until no live session
+ *  remains lets the daemon settle first. */
 export async function teardownSandbox(box: Sandbox): Promise<void> {
   try {
     await runConvoy(box, ["down", box.net, "--force"]);
+    await pollUntil(async () => (await ptySessionNames(box.env)).size === 0, 15_000, 1000);
   } catch {
     // best-effort — we still remove the dir
   }
   rmSync(box.sb, { recursive: true, force: true });
+  if (existsSync(box.sb)) {
+    // A late daemon flush recreated part of the tree between the poll and the remove — sweep once more.
+    await new Promise((r) => setTimeout(r, 1500));
+    rmSync(box.sb, { recursive: true, force: true });
+  }
 }
 
 /** CHECK 1 — a throwaway network stands up, spawns an agent, and tears down cleanly. Proves init / spawn /
@@ -430,8 +441,17 @@ export async function checkDevTask(): Promise<CheckResult> {
       { role: "supervisor", id: "doctor-sup", dir: join(box.sb, "doctor-sup"), persona: fixture("doctor-supervisor-persona.md") },
       { role: "supervisor", id: "doctor-cos", dir: join(box.sb, "doctor-cos"), persona: fixture("doctor-cos-persona.md") },
     ];
+    // Pre-trust ALL agent dirs BEFORE spawning any. convoy's per-agent pre-trust (launch.ts) races under rapid
+    // multi-spawn: a sibling's booting claude reads ~/.claude.json before the NEXT sibling's trust entry is
+    // written, then flushes its stale copy and clobbers that entry — stalling the sibling on the workspace-trust
+    // dialog (its own comment admits the atomic write only "shrink[s] the window"). Writing every entry up front
+    // means each claude's first read already has all of them, so no later flush can drop one. (convoy-core wants
+    // the same batch-pre-trust for `convoy up` / a cos spawning a team — flagged as a follow-up.)
     for (const s of spawns) {
       if (s.id !== "doctor-wk") mkdirSync(s.dir, { recursive: true });
+      pretrustDir(s.dir);
+    }
+    for (const s of spawns) {
       const args = ["add", s.role, "--identity", s.id, "--network", box.net, "--dir", s.dir, ...(s.persona ? ["--persona", s.persona] : [])];
       const add = await runConvoy(box, args);
       if (!add.ok) return { name, pass: false, detail: `convoy add ${s.id} failed: ${add.stderr.trim() || add.stdout.trim()}`, fix: "a tier failed to spawn — `convoy doctor --quick` (Hooks/Personas)" };
@@ -457,27 +477,30 @@ export async function checkDevTask(): Promise<CheckResult> {
     const send = await runSt(box, ["message", "send", "doctor-cos", "-m", kick]);
     if (!send.ok) return { name, pass: false, detail: `seeding the kick failed: ${send.stderr.trim()}`, fix: "the bus rejected the kick — check `st` on PATH" };
 
-    // Poll until the worker's repo passes the HELD-OUT grader (fix landed + behaves). Generous budget — a false
-    // FAIL from a too-tight timeout would erode trust in doctor itself.
+    // Poll until the worker has COMMITTED a fix that behaves. Gate on the COMMIT, not the working-tree file:
+    // the grader reads src/format.js off disk, which flips green the instant the worker SAVES the edit — racing
+    // the edit→commit gap. The commit is the durable, worker-authored artifact we actually grade on. Generous
+    // budget — a false FAIL from a too-tight timeout would erode trust in doctor itself.
     const grader = fixture("grader", "ghost-bug-regression.mjs");
-    const fixed = await pollUntil(async () => (await run("node", [grader, repo])).ok, 420_000, 6000);
-    if (!fixed) return { name, pass: false, detail: "the CoS→sup→worker chain did not produce a working fix within the budget", fix: "delegation stalled or the worker didn't fix+commit — confirm the tiers boot + the bus delivers (checks 2/2b) and re-run" };
+    const committedFix = await pollUntil(async () => {
+      if ((await git("rev-parse", "HEAD")).stdout.trim() === baseSha) return false; // no commit on top of the base yet
+      return (await run("node", [grader, repo])).ok; // …and the committed tree behaves (clean tree == HEAD)
+    }, 420_000, 6000);
+    if (!committedFix) return { name, pass: false, detail: "the CoS→sup→worker chain did not land a committed, working fix within the budget", fix: "delegation stalled or the worker fixed-but-didn't-commit — confirm the tiers boot + the bus delivers (checks 2/2b) and re-run" };
 
-    // GRADE (held-out, ground-truth).
-    const detectsBug = !(await run("node", [grader, fixture("ghost-bug")])).ok; // mutation-valid: fails on buggy base
-    const headSha = (await git("rev-parse", "HEAD")).stdout.trim();
-    const committed = headSha !== baseSha;
-    const touchedFormat = (await git("diff", "--name-only", baseSha, "HEAD")).stdout.includes("src/format.js");
+    // GRADE (held-out, ground-truth). The commit is guaranteed by the poll; validate its nature + the chain.
+    const detectsBug = !(await run("node", [grader, fixture("ghost-bug")])).ok; // mutation-valid: same grader FAILS on the buggy base
+    const changed = (await git("diff", "--name-only", baseSha, "HEAD")).stdout;
+    const touchedSrc = changed.split("\n").some((f) => f.trim().startsWith("src/")); // a real code fix (format.js or config.js), not a docs/empty commit
     const cosToSup = await receivedFrom(box, "doctor-sup", "doctor-cos");
     const supToWk = await receivedFrom(box, "doctor-wk", "doctor-sup");
 
     const gaps: string[] = [];
     if (!detectsBug) gaps.push("the held-out grader did not fail on the buggy base (mutation-validity broken — file a bug)");
-    if (!committed) gaps.push("no commit landed on top of the base (the worker didn't commit the fix)");
-    if (!touchedFormat) gaps.push("the fix commit didn't touch src/format.js");
+    if (!touchedSrc) gaps.push("the fix commit changed no src/ file (not a real code fix)");
     if (!cosToSup) gaps.push("no delegation from doctor-cos → doctor-sup on the bus");
     if (!supToWk) gaps.push("no delegation from doctor-sup → doctor-wk on the bus");
-    if (gaps.length) return { name, pass: false, detail: `a working fix appeared but the org-model grade failed: ${gaps.join("; ")}`, fix: "the fix landed without a clean CoS→sup→worker chain — inspect the bus + git authorship" };
+    if (gaps.length) return { name, pass: false, detail: `a committed fix landed but the org-model grade failed: ${gaps.join("; ")}`, fix: "the fix landed without a clean CoS→sup→worker chain — inspect the bus + git authorship" };
 
     return { name, pass: true, detail: "CoS→supervisor→worker delegated a real bug; the worker fixed + committed it (mutation-valid held-out grade); both delegation hops visible on the bus; all isolated" };
   } finally {
