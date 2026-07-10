@@ -8,6 +8,7 @@ import { run } from "./exec.ts";
 import { Bus, isLive } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, type SupervisedSession } from "./host.ts";
 import { discoverSmalltalkDir, nativeLaunch } from "./launch.ts";
+import { authReadiness } from "./doctor/auth.ts";
 import { compactHookHealth } from "./doctor/hooks.ts";
 import { runFullOrgSuite, runReadinessSuite } from "./doctor/suite.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
@@ -217,6 +218,20 @@ export async function cmdDoctor(args: string[]): Promise<number> {
 
   out("Personas");
   bullet(personasInstalled() ? true : null, personasInstalled() ? `base personas installed (${personasDir()})` : "base personas not installed — `convoy personas install` (auto-installed by add/cos)");
+
+  // Auth — a REAL signed-in probe per installed harness (a cred on disk is not enough: it can be present but
+  // revoked, which only surfaces when a spawn later fails). Capability-detected + probed in parallel; a few
+  // seconds of latency buys catching the machine-wide-signout failure mode up front.
+  out("Auth");
+  const authOutcomes = await authReadiness();
+  for (const o of authOutcomes) {
+    bullet(o.ok, o.ok === false && o.fix ? `${o.detail} — ${o.fix}` : o.detail);
+    if (o.ok === false) failures++;
+  }
+  if (authOutcomes.every((o) => o.ok === null)) {
+    bullet(false, "no supported harness (claude/codex) installed — install one so agents can run");
+    failures++;
+  }
 
   out();
   if (failures > 0) {
