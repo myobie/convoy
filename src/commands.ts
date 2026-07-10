@@ -8,6 +8,7 @@ import { run } from "./exec.ts";
 import { Bus, isLive } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, type SupervisedSession } from "./host.ts";
 import { discoverSmalltalkDir, nativeLaunch } from "./launch.ts";
+import { compactHookHealth } from "./doctor/hooks.ts";
 import { runReadinessSuite } from "./doctor/suite.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
@@ -204,6 +205,13 @@ export async function cmdDoctor(args: string[]): Promise<number> {
       : "smalltalk hooks NOT found — set SMALLTALK_DIR or put `st` on PATH; without them `convoy add`/`cos` can't spawn agents",
   );
   if (smalltalk === null) failures++;
+  else {
+    // Compact-readiness: the PreCompact hook must be parse-safe under macOS /bin/bash 3.2 + fail-open, or
+    // /compact wedges the whole session (and, since the hook is shared, the whole network). Non-spawning.
+    const compact = await compactHookHealth(smalltalk);
+    bullet(compact.ok, compact.ok ? compact.detail : `${compact.detail}${compact.fix ? ` — ${compact.fix}` : ""}`);
+    if (!compact.ok) failures++;
+  }
 
   out("Personas");
   bullet(personasInstalled() ? true : null, personasInstalled() ? `base personas installed (${personasDir()})` : "base personas not installed — `convoy personas install` (auto-installed by add/cos)");
