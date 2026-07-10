@@ -7,13 +7,14 @@
 // Isolation + graded-run patterns are cribbed from evals' fixtures (ghost-bug / team-standup), vendored so
 // doctor is self-contained on a user machine (no evals-repo dependency at runtime).
 
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isGone } from "@myobie/pty/client";
-import { run } from "../exec.ts";
-import { pretrustDir } from "../trust.ts";
+import { childEnv, run } from "../exec.ts";
+import { claudeConfigPath, codexConfigPath, pretrustDir, untrustDirs, untrustDirsCodex } from "../trust.ts";
 
 /** A file bundled under src/doctor/fixtures/, resolved from this module (works from an installed pkg). */
 function fixture(...parts: string[]): string {
@@ -93,11 +94,18 @@ const _sandboxPaths = new Set<string>();
  *  outlast it a single remove sticks. We retry ~15s (early-exit the moment removal holds). Any straggler is
  *  caught by sweepSandboxes() at end-of-suite. (We deliberately do NOT poll `pty list` to "wait for settle" —
  *  that spawns the very daemon that rewrites the metadata.) */
-export async function teardownSandbox(box: Sandbox): Promise<void> {
+export async function teardownSandbox(box: Sandbox, trustDirs?: string[]): Promise<void> {
   try {
     await runConvoy(box, ["down", box.net, "--force"]);
   } catch {
     // best-effort — we still remove the dir
+  }
+  // Config self-cleaning window: AFTER `convoy down` has killed the sandbox agents (so no live Claude re-writes
+  // its own ~/.claude.json project entry and clobbers our delete — the run-#3 lost-update finding) but BEFORE the
+  // dirs are removed (realpathSync only resolves the /var→/private/var trust key while the dir still exists).
+  if (trustDirs && trustDirs.length > 0) {
+    untrustDirs(trustDirs);
+    untrustDirsCodex(trustDirs);
   }
   for (let i = 0; i < 16; i++) {
     rmSync(box.sb, { recursive: true, force: true });
@@ -524,4 +532,351 @@ export async function checkDevTask(): Promise<CheckResult> {
   } finally {
     await teardownSandbox(box);
   }
+}
+
+// ============================================================================
+// `convoy doctor --full` — the REAL autonomous-org proof (opt-in, slower).
+// Where the default suite proves the reliable CORE via thin deterministic stand-ins, --full spins the user's
+// REAL chief-of-staff + supervisor + worker personas through the real workflows end-to-end: hands-off
+// bring-up under `convoy up`, an autonomous CoS→supervisor→worker delegation chain on the bus, and a real
+// graded worker fix. Reliability-by-design: the tooling is deterministic; the ONE non-deterministic thing
+// (agent reasoning) is minimized with an UNAMBIGUOUS task (one clear bug, one prescribed delegation path);
+// any failure on that clear task is surfaced as a specific finding to root-cause, never tolerated as flake.
+// ============================================================================
+
+/** Pre-seed a POPULATED private `cos` repo so the real chief-of-staff persona SKIPS its first-run interview.
+ *  first-run-interview.md gates the interview on a precise signal: a populated repo = `identity.md` exists
+ *  AND has a non-empty `name:`. We write that (plus minimal trackers marking the network HEADLESS, so the real
+ *  CoS persona doesn't stall waiting on a principal for pushes/forms) and commit with a repo-local git identity
+ *  (works with no global git user). Returns an error string on failure, else null. */
+async function seedCosRepo(dir: string, env: NodeJS.ProcessEnv): Promise<string | null> {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "identity.md"),
+    "---\nname: Doctor Principal\ntimezone: UTC\n---\n\nAutonomous readiness-check principal. This network is HEADLESS: no human is at the keyboard, no push/notification transport is wired, and there is no forms UI. Operate fully autonomously and report on the smalltalk bus.\n",
+  );
+  writeFileSync(join(dir, "priorities.md"), "# Priorities\n\n1. Fix the one bug delegated on the bus, via the CoS→supervisor→worker chain, then report done.\n");
+  writeFileSync(join(dir, "team.md"), "# Team\n\nStand up specialists on demand as work arrives on the bus.\n");
+  writeFileSync(join(dir, "comms.md"), "# Comms\n\nHEADLESS network — no principal attached. Never push notifications, never present forms, never wait for a human. Every report goes on the smalltalk bus.\n");
+  const git = async (...a: string[]): Promise<boolean> => (await run("git", a, { cwd: dir, env })).ok;
+  for (const a of [["init", "-q"], ["config", "user.name", "doctor-cos"], ["config", "user.email", "cos@doctor.local"], ["add", "-A"], ["commit", "-q", "-m", "cos: pre-seeded setup (skip first-run interview)"]]) {
+    if (!(await git(...a))) return `git ${a[0]} failed while seeding the cos repo`;
+  }
+  return null;
+}
+
+/** Materialize the bundled buggy 'labelkit' repo as a git repo with the buggy base committed (so the worker
+ *  commits its fix ON TOP + we have a base to diff/grade against). Repo-local git identity. */
+async function materializeGhostBug(repo: string, env: NodeJS.ProcessEnv): Promise<{ baseSha: string } | { error: string }> {
+  mkdirSync(repo, { recursive: true });
+  cpSync(fixture("ghost-bug"), repo, { recursive: true });
+  const git = async (...a: string[]): Promise<ExecLike> => await run("git", a, { cwd: repo, env });
+  for (const a of [["init", "-q"], ["config", "user.name", "doctor-worker"], ["config", "user.email", "worker@doctor.local"], ["add", "-A"], ["commit", "-q", "-m", "labelkit: initial (buggy)"]]) {
+    if (!(await git(...a)).ok) return { error: `git ${a[0]} failed materializing the buggy worker repo` };
+  }
+  return { baseSha: (await git("rev-parse", "HEAD")).stdout.trim() };
+}
+
+type ExecLike = { ok: boolean; stdout: string; stderr: string };
+
+/** Host the sandbox network with `convoy up` in the BACKGROUND — the adopter's real hosting path (it adopts +
+ *  reconciles the members and would respawn a crashed permanent). Returns a `stop()` that SIGTERMs the host and
+ *  resolves when it exits (Nomad model: stopping the host DETACHES the agents — they keep running — so a
+ *  subsequent `convoy down` is what actually tears them down). `stop()` never hangs teardown (5s cap). */
+function backgroundUp(box: Sandbox): { stop: () => Promise<void> } {
+  const child = spawn("node", [convoyBin(), "up", box.net], { env: childEnv(box.env), stdio: "ignore" });
+  child.on("error", () => {}); // best-effort: a host that fails to spawn must not crash the check
+  return {
+    stop: () =>
+      new Promise<void>((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) return resolve();
+        const done = (): void => resolve();
+        child.once("exit", done);
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          return resolve();
+        }
+        setTimeout(done, 5000);
+      }),
+  };
+}
+
+/** CHECK (--full) — the REAL autonomous org produces a graded fix. Spins the user's real chief-of-staff (no
+ *  persona override), hosts under `convoy up`, and seeds ONE unambiguous kick: the CoS spawns a real supervisor,
+ *  which spawns a real worker, which fixes + COMMITS the bundled ghost-bug. Graded held-out + ground-truth:
+ *  (G1) the CoS boots hands-off to available (interview pre-seeded away, dirs pre-trusted); (G2) the delegation
+ *  chain is visible on the bus at BOTH hops (cos→sup, sup→wk); (G3) the worker's repo passes a MUTATION-VALID
+ *  grader that provably FAILS on the pristine buggy base, via a commit touching src/. Fully isolated + torn
+ *  down. Unlike the default dev-task check, doctor does NOT pre-spawn the tiers — the CoS and supervisor really
+ *  spawn their reports; that autonomous spawning IS the thing being proven. */
+export async function checkFullOrg(): Promise<CheckResult> {
+  const name = "full autonomous org — real CoS→supervisor→worker (init/up · delegation · graded fix)";
+  let box: Sandbox;
+  try {
+    box = makeSandbox("full");
+  } catch (e) {
+    return { name, pass: false, detail: e instanceof Error ? e.message : String(e), fix: "set TMPDIR to a shorter path (pty sockets must fit ~104 bytes)" };
+  }
+  let up: { stop: () => Promise<void> } | null = null;
+  // Progress to stderr: a real multi-agent run takes minutes; a silent wait is bad UX (and blind to debug).
+  const note = (s: string): void => {
+    process.stderr.write(`[full-org] ${s}\n`);
+  };
+  // Declared out here (basename == identity) so the finally can clean up their trust entries. Pre-seed the
+  // populated cos repo (skips the interview), materialize the buggy worker repo, pre-create the supervisor's dir.
+  const cosRepo = join(box.sb, "doctor-cos");
+  const supDir = join(box.sb, "doctor-sup");
+  const workerRepo = join(box.sb, "doctor-wk");
+  try {
+    const init = await runConvoy(box, ["init", box.net, "--no-channel"]);
+    if (!init.ok) return { name, pass: false, detail: `convoy init failed: ${init.stderr.trim() || init.stdout.trim()}`, fix: "run `convoy doctor --quick`" };
+
+    // Pre-trust ALL THREE dirs up front: the CoS/supervisor spawn their reports one at a time (so per-add trust
+    // would also cover it), but up-front pre-trust removes a degree of freedom = more reliable.
+    const seedErr = await seedCosRepo(cosRepo, box.env);
+    if (seedErr) return { name, pass: false, detail: seedErr, fix: "git is required for --full — install it and re-run" };
+    const ghost = await materializeGhostBug(workerRepo, box.env);
+    if ("error" in ghost) return { name, pass: false, detail: ghost.error, fix: "git is required for --full — install it and re-run" };
+    mkdirSync(supDir, { recursive: true });
+    for (const d of [cosRepo, supDir, workerRepo]) pretrustDir(d);
+    note(`sandbox ${box.sb} — pre-seeded cos repo + buggy worker repo, pre-trusted 3 dirs`);
+
+    // Bring up the REAL chief-of-staff (no persona override — the real persona; permanent by role) pointed at
+    // the pre-seeded repo, then HOST with `convoy up` (background; SIGTERM'd at teardown).
+    const addCos = await runConvoy(box, ["add", "chief-of-staff", "--identity", "doctor-cos", "--network", box.net, "--dir", cosRepo]);
+    if (!addCos.ok) return { name, pass: false, detail: `convoy add chief-of-staff failed: ${addCos.stderr.trim() || addCos.stdout.trim()}`, fix: "the CoS didn't spawn — `convoy doctor --quick` (Hooks/Personas)" };
+    up = backgroundUp(box);
+    note("real chief-of-staff spawned; convoy up hosting — waiting for hands-off boot (up to 3min)…");
+
+    // G1 — hands-off bring-up: the CoS boots to available with NO trust prompt + NO interview stall.
+    const cosUp = await pollUntil(async () => (await runSt(box, ["status", "doctor-cos"])).stdout.trim() === "available", 180_000);
+    if (!cosUp) return { name, pass: false, detail: "the real CoS never reached available (didn't boot hands-off)", fix: "the CoS stalled on boot — likely the first-run interview didn't skip (check the pre-seeded identity.md `name:`) or a workspace-trust prompt; verify claude auth (`/login`) + `convoy doctor --quick`" };
+    note("CoS available (hands-off boot ✓) — seeding the kick");
+
+    // Seed ONE unambiguous kick. Prescriptive on MECHANICS (identities, dirs, exact commands) so the only
+    // non-determinism is the org REASONING we're proving (delegate down the chain + fix). Explicitly HEADLESS
+    // so the real CoS persona doesn't park waiting on a principal (no pushes / forms / human).
+    const kick = [
+      "TASK (autonomous, HEADLESS — this arrived on the network bus, NOT from a human principal. There is NO principal attached: do NOT push notifications, do NOT present forms, do NOT wait for any human. Operate fully autonomously; the smalltalk bus is your only channel; report completion there.)",
+      "",
+      "Stand up the org to fix ONE real bug, delegating down the FULL chain CoS -> supervisor -> worker:",
+      `1. You (CoS) spawn a supervisor: convoy add supervisor --identity doctor-sup --network ${box.net} --dir ${supDir} (already trusted). Brief it, and drive it to available. ALWAYS pass --network ${box.net} on every convoy add so the agent + its ding sidecar land on THIS network (a bare add would leak into the global pty root).`,
+      `2. Have the supervisor spawn a worker in the buggy repo: convoy add worker --identity doctor-wk --network ${box.net} --dir ${workerRepo} (already trusted). Brief it, and drive it to available. (Same rule: the supervisor MUST pass --network ${box.net}.)`,
+      `3. The worker owns the ESM lib 'labelkit' at ${workerRepo}. BUG: calling format(label, {custom options}) permanently CORRUPTS the shared default options (a mutating merge in src/format.js), so every later default-options call is wrong. FIX: make the merge non-mutating so the shared defaults are never modified; keep the existing test suite green. Then COMMIT the fix (git add -A && git commit -m ...).`,
+      "4. Report 'done' back up the chain (worker -> supervisor -> CoS) on the bus.",
+      "",
+      "Do it now, autonomously.",
+    ].join("\n");
+    const send = await runSt(box, ["message", "send", "doctor-cos", "-m", kick]);
+    if (!send.ok) return { name, pass: false, detail: `seeding the kick failed: ${send.stderr.trim()}`, fix: "the bus rejected the kick — check `st` on PATH" };
+    note("kick sent — waiting for the org to delegate + fix (up to ~13min)…");
+
+    // G2 — the delegation chain runs autonomously + shows on the bus at BOTH hops; G3 — the worker committed a
+    // fix that BEHAVES. One combined loop (gate G3 on the COMMIT, not the working tree, so we don't race the
+    // edit→commit gap), with a heartbeat that logs the org's live state so a long wait isn't blind. Generous
+    // budget — a false FAIL from a tight timeout would erode trust in doctor itself.
+    const grader = fixture("grader", "ghost-bug-regression.mjs");
+    const git = async (...a: string[]): Promise<ExecLike> => await run("git", a, { cwd: workerRepo, env: box.env });
+    let cosToSup = false;
+    let supToWk = false;
+    let committedFix = false;
+    const deadline = Date.now() + 780_000; // ~13min
+    for (let i = 0; Date.now() < deadline; i++) {
+      if (!cosToSup) cosToSup = await receivedFrom(box, "doctor-sup", "doctor-cos");
+      if (!supToWk) supToWk = await receivedFrom(box, "doctor-wk", "doctor-sup");
+      const committed = (await git("rev-parse", "HEAD")).stdout.trim() !== ghost.baseSha;
+      committedFix = committed && (await run("node", [grader, workerRepo])).ok;
+      if (cosToSup && supToWk && committedFix) break;
+      if (i % 5 === 0) {
+        const stat = async (id: string): Promise<string> => (await runSt(box, ["status", id])).stdout.trim() || "—";
+        note(`… cos→sup=${cosToSup} sup→wk=${supToWk} committed=${committed} graded=${committedFix} | status cos=${await stat("doctor-cos")} sup=${await stat("doctor-sup")} wk=${await stat("doctor-wk")}`);
+      }
+      await new Promise((r) => setTimeout(r, 6000));
+    }
+    note(`wait done — cos→sup=${cosToSup} sup→wk=${supToWk} graded-fix=${committedFix}`);
+
+    // Grade G2/G3 — real-state / held-out / mutation-valid.
+    const detectsBug = !(await run("node", [grader, fixture("ghost-bug")])).ok; // the same grader FAILS on the buggy base
+    const changed = committedFix ? (await git("diff", "--name-only", ghost.baseSha, "HEAD")).stdout : "";
+    const touchedSrc = changed.split("\n").some((f) => f.trim().startsWith("src/"));
+
+    // G4 — restart-continuity (cold, no --resume). Only meaningful once the worker did real org work (a committed
+    // fix = the "before" unit). Externalize a NEW resumed task in the worker's now.md, cold-restart it via
+    // `convoy reload` (respawns from the STORED pty.toml command = NO --resume = a fresh transcript; also dodges
+    // the "already inside a pty session" failure `pty restart -y` hits from within doctor's own pty), and assert
+    // the cold-booted worker reconstructs the task from now.md via the SessionStart hook + acts on it. Ungameable
+    // (evals' straddle design): the token is unique + lives ONLY in now.md (injected post-boot) so it cannot
+    // pre-exist, and the reconstruction artifact STRADDLES the restart — real work (the fix commit) landed BEFORE
+    // the reload epoch, the artifact lands AFTER — proving RESUMED, not front-loaded.
+    let restartOk: boolean | null = null; // null = not attempted (no committed fix to restart onto)
+    let straddled = false;
+    if (committedFix) {
+      const rcToken = `RC-${process.pid}-${box.sb.slice(-6)}`;
+      const rcLog = join(workerRepo, "RECONSTRUCTED.log");
+      const nowMd = join(box.net, "doctor-wk", "context", "now.md");
+      mkdirSync(dirname(nowMd), { recursive: true });
+      writeFileSync(nowMd, `# Current task (durable working state)\n\nYou were restarted mid-task. Your ONE resumed task: run this shell command EXACTLY, then stand by:\n\n    echo "${rcToken}" >> "${rcLog}"\n\nDo it now if RECONSTRUCTED.log does not already contain that token.\n`);
+      const reloadEpoch = Date.now();
+      note("G3 ✓ — cold-restarting the worker (convoy reload, no --resume) to prove restart-continuity…");
+      const reload = await runConvoy(box, ["reload", "doctor-wk", "--network", box.net]);
+      if (!reload.ok) {
+        restartOk = false;
+        note(`reload failed: ${reload.stderr.trim() || reload.stdout.trim()}`);
+      } else {
+        restartOk = await pollUntil(async () => existsSync(rcLog) && readFileSync(rcLog, "utf8").includes(rcToken), 300_000, 6000);
+        if (restartOk) {
+          try {
+            straddled = statSync(rcLog).mtimeMs >= reloadEpoch; // the reconstruction artifact appeared AFTER the restart epoch
+          } catch {
+            straddled = false;
+          }
+        }
+        note(`restart-continuity: reconstructed=${restartOk} straddled=${straddled}`);
+      }
+    }
+
+    const gaps: string[] = [];
+    if (!cosToSup) gaps.push("G2: no delegation from the CoS to a supervisor on the bus (the CoS didn't stand up + brief a supervisor)");
+    if (!supToWk) gaps.push("G2: no delegation from the supervisor to a worker on the bus (the supervisor didn't spawn + brief the worker)");
+    if (!committedFix) gaps.push("G3: the worker did not land a committed, behaving fix within the budget");
+    if (committedFix && !detectsBug) gaps.push("G3: the held-out grader did not fail on the buggy base (mutation-validity broken — file a bug)");
+    if (committedFix && !touchedSrc) gaps.push("G3: the fix commit changed no src/ file (not a real code fix)");
+    if (restartOk === false) gaps.push("G4: the cold-restarted worker did NOT reconstruct its now.md task (SessionStart didn't inject it, or the agent didn't act) — agents won't survive a restart on this setup");
+    if (restartOk === true && !straddled) gaps.push("G4: the restart-continuity artifact did not land AFTER the restart epoch (front-loaded?) — the straddle check failed");
+    if (gaps.length) return { name, pass: false, detail: `the real org did not complete cleanly: ${gaps.join("; ")}`, fix: "a reliability finding, NOT a flake — root-cause the named gate: `convoy doctor --quick` for plumbing, then inspect the bus (`st message ls` per tier) + the CoS/supervisor terminals (`pty peek`) for a persona stall (e.g. the CoS parked waiting on a principal)" };
+
+    return { name, pass: true, detail: "real CoS spawned+briefed a real supervisor, which spawned+briefed a real worker, which fixed + COMMITTED the bug (mutation-valid held-out grade); both delegation hops visible on the bus; the worker survived a cold restart (no --resume) + reconstructed its task from now.md (straddled the restart); hands-off bring-up under `convoy up`; all isolated" };
+  } finally {
+    if (up) await up.stop(); // stop hosting (agents detach + keep running) before teardown tears them down
+    // teardownSandbox kills the agents THEN cleans up the trust entries doctor wrote for these ephemeral sandbox
+    // dirs (claude's ~/.claude.json + codex's ~/.codex/config.toml) — after-kill so no live Claude re-adds them,
+    // before-rm so the realpath trust key still resolves. Best-effort; the gate also tolerates any /cvd- residue.
+    await teardownSandbox(box, [cosRepo, supDir, workerRepo]);
+  }
+}
+
+/** A snapshot of DURABLE (on-disk, survive-a-session) schedulers — the ONLY place a leaked cron could persist.
+ *  Harness crons (CronCreate) are session-only + in-memory (nothing on disk; deleted when the Claude session
+ *  exits), so both the CoS shepherd cron and the supervisor watchdog cron die when `convoy down` kills their
+ *  sessions. The only way a run could leak a durable cron is an OS-level scheduler, which the real personas do
+ *  not create — so an unchanged snapshot across a --full run (which spins a REAL supervisor that arms its
+ *  session-only watchdog) EMPIRICALLY confirms nothing leaked to prod. We read the user crontab + convoy/st/pty
+ *  launchd job LABELS (labels, not PIDs — PIDs churn). */
+async function durableSchedulerSnapshot(): Promise<string> {
+  const crontab = await run("crontab", ["-l"]); // "no crontab for user" → non-zero + empty
+  const cron = crontab.ok ? crontab.stdout.trim() : "";
+  const launch = await run("launchctl", ["list"]);
+  const jobs = launch.ok
+    ? launch.stdout
+        .split("\n")
+        .map((l) => l.split("\t").pop() ?? "")
+        .filter((label) => /convoy|smalltalk|doctor|\bpty\b/i.test(label))
+        .sort()
+        .join(",")
+    : "";
+  return `crontab=[${cron}] launchd=[${jobs}]`;
+}
+
+/** A snapshot of the trust CONFIG (project-trust keys in both harness configs) so the gate can assert --full
+ *  left prod config untouched — its teardown cleans up the sandbox-dir entries it wrote, so this must match.
+ *  Returns the key SETS (not a joined string) so the gate can report only the DELTA on a mismatch — never dump
+ *  the user's whole (large) project list. */
+function configSnapshot(): { claude: string[]; codex: string[] } {
+  let claude: string[] = [];
+  try {
+    const c: { projects?: Record<string, unknown> } = JSON.parse(readFileSync(claudeConfigPath(), "utf8"));
+    claude = Object.keys(c.projects ?? {}).sort();
+  } catch {
+    // no config → empty
+  }
+  let codex: string[] = [];
+  try {
+    codex = readFileSync(codexConfigPath(), "utf8")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("[projects."))
+      .sort();
+  } catch {
+    // no config → empty
+  }
+  return { claude, codex };
+}
+
+/** Keys present in `after` but not `before` (the leak), and vice-versa. */
+function keyDelta(before: string[], after: string[]): { added: string[]; removed: string[] } {
+  const b = new Set(before);
+  const a = new Set(after);
+  return { added: after.filter((k) => !b.has(k)), removed: before.filter((k) => !a.has(k)) };
+}
+
+/** Run the FULL autonomous-org suite (`convoy doctor --full`): the real-org check + a prod-untouched gate.
+ *  Opt-in + slower than the default readiness suite because it runs real multi-agent workflows end to end. */
+export async function runFullOrgSuite(): Promise<number> {
+  const out = (s = ""): void => {
+    process.stdout.write(`${s}\n`);
+  };
+  out();
+  out("Full autonomous-org proof (--full) — a REAL CoS→supervisor→worker network in an isolated sandbox.");
+  out("This spins real agents through the real workflows and takes several minutes. Your prod network is untouched.");
+  // Prod-untouched gate — the isolation proof, across THREE dimensions: pty SESSIONS, durable CRONS/schedulers,
+  // and trust CONFIG. Snapshot all three before + after; a leak in any one fails the gate + names the dimension.
+  const prodBefore = await ptySessionNames(); // default PTY_ROOT = the user's prod root
+  const schedBefore = await durableSchedulerSnapshot();
+  const configBefore = configSnapshot();
+
+  const results: CheckResult[] = [];
+  results.push(await checkFullOrg());
+
+  const prodAfter = await ptySessionNames();
+  const schedAfter = await durableSchedulerSnapshot();
+  const configAfter = configSnapshot();
+  const added = [...prodAfter].filter((s) => !prodBefore.has(s));
+  const removed = [...prodBefore].filter((s) => !prodAfter.has(s));
+  // Ignore doctor's own ephemeral sandbox-dir entries (`/cvd-…` mkdtemp paths that reference now-deleted temp
+  // dirs — harmless dead keys). Teardown cleans them best-effort, but the shared ~/.claude.json is written
+  // concurrently by every live Claude instance, so a raced re-add is possible; tolerating them here keeps the
+  // gate RELIABLE while still failing on any REAL prod-config change (a prod dir never contains `/cvd-`).
+  const notSandbox = (k: string): boolean => !k.includes("/cvd-");
+  const claudeDelta = keyDelta(configBefore.claude.filter(notSandbox), configAfter.claude.filter(notSandbox));
+  const codexDelta = keyDelta(configBefore.codex.filter(notSandbox), configAfter.codex.filter(notSandbox));
+  const sessionsOk = added.length === 0 && removed.length === 0;
+  const cronsOk = schedBefore === schedAfter;
+  const configOk = claudeDelta.added.length === 0 && claudeDelta.removed.length === 0 && codexDelta.added.length === 0 && codexDelta.removed.length === 0;
+  const leaks: string[] = [];
+  if (!sessionsOk) leaks.push(`SESSIONS — added [${added.join(", ")}] removed [${removed.join(", ")}]`);
+  if (!cronsOk) leaks.push(`CRONS/schedulers — a durable scheduler changed (before=${schedBefore} after=${schedAfter})`);
+  if (!configOk) {
+    const parts: string[] = [];
+    if (claudeDelta.added.length) parts.push(`claude +[${claudeDelta.added.join(", ")}]`);
+    if (claudeDelta.removed.length) parts.push(`claude -[${claudeDelta.removed.join(", ")}]`);
+    if (codexDelta.added.length) parts.push(`codex +[${codexDelta.added.join(", ")}]`);
+    if (codexDelta.removed.length) parts.push(`codex -[${codexDelta.removed.join(", ")}]`);
+    leaks.push(`CONFIG — a trust entry survived teardown: ${parts.join("; ")}`);
+  }
+  results.push({
+    name: "prod untouched (sessions + crons + config)",
+    pass: leaks.length === 0,
+    detail:
+      leaks.length === 0
+        ? `prod pty sessions unchanged (${prodBefore.size} live); durable schedulers (crontab/launchd) unchanged — the real supervisor's session-only watchdog cron left NO on-disk trace + died with convoy down (verified empirically); prod trust config unchanged (doctor's ephemeral sandbox entries cleaned best-effort + ignored)`
+        : `prod delta — ${leaks.join(" | ")}`,
+    fix: leaks.length === 0 ? undefined : "a check leaked into prod — isolation breach, file a bug (the named dimension localizes it)",
+  });
+
+  out();
+  for (const r of results) {
+    out(`  ${r.pass ? "✓" : "✗"} ${r.name}`);
+    out(`      ${r.detail}`);
+    if (!r.pass && r.fix) out(`      → fix: ${r.fix}`);
+  }
+  await sweepSandboxes();
+  const failed = results.filter((r) => !r.pass).length;
+  out();
+  if (failed === 0) {
+    out("✓ the full autonomous org works on this machine — a real CoS→supervisor→worker delegated + shipped a graded fix, hands-off.");
+    return 0;
+  }
+  out(`✗ ${failed} full-org check${failed === 1 ? "" : "s"} failed — see the → fix lines above.`);
+  return 1;
 }

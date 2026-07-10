@@ -9,7 +9,7 @@ import { Bus, isLive } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, type SupervisedSession } from "./host.ts";
 import { discoverSmalltalkDir, nativeLaunch } from "./launch.ts";
 import { compactHookHealth } from "./doctor/hooks.ts";
-import { runReadinessSuite } from "./doctor/suite.ts";
+import { runFullOrgSuite, runReadinessSuite } from "./doctor/suite.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
 import { preflight, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
@@ -163,13 +163,14 @@ function resolveTransport(args: string[]): Transport | null {
 
 // ---- commands ----
 export async function cmdDoctor(args: string[]): Promise<number> {
-  const badFlag = unknownFlag(args, ["--quick"], ["--network"]);
+  const badFlag = unknownFlag(args, ["--quick", "--full"], ["--network"]);
   if (badFlag) {
     err(`unrecognized flag "${badFlag}" for \`convoy doctor\`. See \`convoy doctor --help\`.`);
     return 2;
   }
   const network = optValue(args, "--network");
   const quick = hasFlag(args, "--quick");
+  const full = hasFlag(args, "--full");
   let failures = 0;
   const bullet = (ok: boolean | null, s: string): void => out(`  ${ok === null ? "•" : ok ? "✓" : "✗"} ${s}`);
 
@@ -225,7 +226,10 @@ export async function cmdDoctor(args: string[]): Promise<number> {
   out("✓ convoy is ready here (preflight).");
   if (quick) return 0; // --quick = preflight only
 
-  // Full setup-readiness suite — spawns isolated throwaway agents; the prod network stays untouched.
+  // --full = the REAL autonomous-org proof (opt-in, slower): the user's real CoS→supervisor→worker run through
+  // the real workflows end to end. The default (no flag) runs the fast thin-stand-in readiness suite. Both
+  // spawn only isolated throwaway agents; the prod network stays untouched.
+  if (full) return runFullOrgSuite();
   return runReadinessSuite();
 }
 

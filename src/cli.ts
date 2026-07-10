@@ -116,7 +116,7 @@ function printHelp(): void {
     "convoy — stand up and run your crew of agents (TypeScript).\n\n" +
       "SUBCOMMANDS:\n" +
       "  ls (default)   list the convoy's members\n" +
-      "  doctor         setup-readiness suite: prove your setup can do real agent work [--quick = preflight only]\n" +
+      "  doctor         setup-readiness suite: prove your setup can do real agent work [--quick = preflight only; --full = real CoS→sup→worker org proof (slower)]\n" +
       "  init [dir]     create + wire a network (auto-clones personas)\n" +
       "  add <role>     add an agent (correct-by-construction) [--identity --network --dir --mcp --permanent --prefix --config-dir --dry-run]\n" +
       "  cos --repo <d> bootstrap a Chief of Staff\n" +

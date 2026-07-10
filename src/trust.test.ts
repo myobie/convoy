@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeConfigPath, codexConfigPath, pretrustDir, pretrustDirs, pretrustDirsCodex } from "./trust.ts";
+import { claudeConfigPath, codexConfigPath, pretrustDir, pretrustDirs, pretrustDirsCodex, untrustDirs, untrustDirsCodex } from "./trust.ts";
 
 describe("pretrustDir (Claude Code workspace-trust pre-accept)", () => {
   const savedHome = process.env["HOME"];
@@ -111,6 +111,35 @@ describe("pretrustDir (Claude Code workspace-trust pre-accept)", () => {
     // the ambient ~/.claude.json was never created for this
     expect(() => readConfig()).toThrow();
   });
+
+  // ---- untrustDirs: the teardown cleanup behind `convoy doctor --full` (config left untouched) ----
+
+  it("untrust: removes exactly the given dirs' keys, leaving siblings intact (round-trips to before)", () => {
+    const dirs = ["a", "b", "c"].map((n) => {
+      const d = join(home, n);
+      mkdirSync(d);
+      return d;
+    });
+    pretrustDirs(dirs);
+    untrustDirs([dirs[0]!, dirs[2]!]); // remove a + c, keep b
+    const projects = readConfig().projects;
+    expect(projects[realpathSync(dirs[0]!)]).toBeUndefined();
+    expect(projects[realpathSync(dirs[2]!)]).toBeUndefined();
+    expect(projects[realpathSync(dirs[1]!)].hasTrustDialogAccepted).toBe(true);
+  });
+
+  it("untrust: preserves other projects + top-level fields; absent key is a no-op", () => {
+    writeFileSync(claudeConfigPath(), JSON.stringify({ someTopLevel: 42, projects: { "/other": { hasTrustDialogAccepted: true } } }));
+    untrustDirs(["/never-added"]); // no-op — key absent
+    const a = join(home, "a");
+    mkdirSync(a);
+    pretrustDirs([a]);
+    untrustDirs([a]);
+    const cfg = readConfig();
+    expect(cfg.someTopLevel).toBe(42);
+    expect(cfg.projects["/other"]).toEqual({ hasTrustDialogAccepted: true });
+    expect(cfg.projects[realpathSync(a)]).toBeUndefined(); // cleaned up
+  });
 });
 
 describe("pretrustDirsCodex (codex ~/.codex/config.toml directory-trust pre-accept)", () => {
@@ -161,5 +190,27 @@ describe("pretrustDirsCodex (codex ~/.codex/config.toml directory-trust pre-acce
     const first = readCfg();
     pretrustDirsCodex([a]);
     expect(readCfg()).toBe(first); // header already present → nothing appended
+  });
+
+  it("untrustDirsCodex: removes doctor's block, preserves user config + comments + sibling projects", () => {
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(codexConfigPath(), '# my settings\nmodel = "gpt-5"\n\n[projects."/other"]\ntrust_level = "trusted"\n');
+    const a = join(home, "a");
+    mkdirSync(a);
+    pretrustDirsCodex([a]);
+    expect(hasTrustBlock(a)).toBe(true);
+    untrustDirsCodex([a]);
+    const txt = readCfg();
+    expect(hasTrustBlock(a)).toBe(false); // doctor's block removed
+    expect(txt).toContain("# my settings"); // user comment preserved
+    expect(txt).toContain('model = "gpt-5"'); // user setting preserved
+    expect(txt).toContain('[projects."/other"]'); // sibling project preserved
+  });
+
+  it("untrustDirsCodex: absent block is a no-op", () => {
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(codexConfigPath(), 'model = "gpt-5"\n');
+    untrustDirsCodex([join(home, "never")]);
+    expect(readCfg()).toBe('model = "gpt-5"\n'); // untouched
   });
 });

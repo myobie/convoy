@@ -68,6 +68,35 @@ export function pretrustDirs(dirs: string[], configDir?: string): { trusted: str
   }
 }
 
+/** REVERSE of pretrustDirs — remove the given dirs' realpath keys from `~/.claude.json` projects. Used by
+ *  `convoy doctor --full` to CLEAN UP the trust entries it wrote for its ephemeral sandbox dirs at teardown, so
+ *  prod config is left byte-for-byte untouched (a "config untouched" gate must actually hold). ONLY call this on
+ *  dirs the caller itself created + pre-trusted (unique temp paths) — it deletes the whole project entry for
+ *  each key, which would be wrong for a real prod project. Best-effort + atomic (temp+rename); a no-op if the
+ *  config or a key is absent. */
+export function untrustDirs(dirs: string[]): void {
+  const path = claudeConfigPath();
+  try {
+    if (!existsSync(path)) return;
+    const config: { projects?: Record<string, unknown> } = JSON.parse(readFileSync(path, "utf8"));
+    if (!config.projects) return;
+    let changed = false;
+    for (const dir of dirs) {
+      const key = trustKey(dir);
+      if (Object.prototype.hasOwnProperty.call(config.projects, key)) {
+        delete config.projects[key];
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    const tmp = `${path}.convoy-${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(config, null, 2));
+    renameSync(tmp, path);
+  } catch {
+    // best-effort — teardown cleanup must never throw
+  }
+}
+
 /** Path to codex's per-user config (honors $HOME). */
 export function codexConfigPath(): string {
   return `${process.env["HOME"] ?? homedir()}/.codex/config.toml`;
@@ -106,5 +135,38 @@ export function pretrustDirsCodex(dirs: string[]): { trusted: string[]; failed: 
     return { trusted, failed: [] };
   } catch {
     return { trusted: [], failed: dirs };
+  }
+}
+
+/** REVERSE of pretrustDirsCodex — remove the `[projects."<realpath>"]` + `trust_level = "trusted"` block for
+ *  each given dir from `~/.codex/config.toml`. `convoy up`'s up-scope batch pre-trusts BOTH harness configs for
+ *  every member (a cross-write that's inert at runtime), so a `convoy doctor --full` run appends codex blocks for
+ *  its ephemeral sandbox dirs even though those agents are claude — this cleans them at teardown so the user's
+ *  real codex config is left untouched. Only removes doctor's exact 2-line shape (header immediately followed by
+ *  the trusted line), preserving any surrounding user config + comments. Best-effort + atomic. */
+export function untrustDirsCodex(dirs: string[]): void {
+  const path = codexConfigPath();
+  try {
+    if (!existsSync(path)) return;
+    const lines = readFileSync(path, "utf8").split("\n");
+    const headers = new Set(dirs.map((d) => `[projects."${trustKey(d)}"]`));
+    const out: string[] = [];
+    let changed = false;
+    for (let i = 0; i < lines.length; i++) {
+      if (headers.has((lines[i] ?? "").trim()) && (lines[i + 1] ?? "").trim() === 'trust_level = "trusted"') {
+        i++; // drop the header AND its trust_level line
+        changed = true;
+        continue;
+      }
+      out.push(lines[i]!);
+    }
+    if (!changed) return;
+    // collapse blank-line runs left by the removal + strip leading blanks; keep a single trailing newline.
+    const text = out.join("\n").replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "").replace(/\n+$/, "\n");
+    const tmp = `${path}.convoy-${process.pid}.tmp`;
+    writeFileSync(tmp, text);
+    renameSync(tmp, path);
+  } catch {
+    // best-effort — teardown cleanup must never throw
   }
 }
