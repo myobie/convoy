@@ -129,6 +129,9 @@ export function writePtyToml(dir: string, spec: AgentSpec): void {
     env["ST_ROOT"] = root;
     env["PTY_ROOT"] = `${root}/pty`;
   }
+  // CLAUDE_CONFIG_DIR relocates Claude Code's whole config (auth/settings/skills) — harness session only,
+  // never the ding sidecar (which is just `st ding` and doesn't read it).
+  const harnessEnv = spec.configDir ? { ...env, CLAUDE_CONFIG_DIR: spec.configDir } : env;
   const doc: Record<string, unknown> = {
     prefix: harnessId,
     sessions: {
@@ -136,7 +139,7 @@ export function writePtyToml(dir: string, spec: AgentSpec): void {
         id: harnessId,
         command: harnessCommand(spec.harness, specPermissionMode(spec), bootPrompt(spec.role)),
         tags: { role: "agent", ...(permanent ? { strategy: "permanent" } : {}), ...stTag },
-        env,
+        env: harnessEnv,
       },
       ...(usesDing(spec)
         ? {

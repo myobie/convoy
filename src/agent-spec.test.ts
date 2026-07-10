@@ -29,6 +29,7 @@ function spec(over: Partial<AgentSpec> = {}): AgentSpec {
     workingDir: null,
     permanentOverride: null,
     prefix: null,
+    configDir: null,
     ...over,
   };
 }

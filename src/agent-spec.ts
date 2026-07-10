@@ -21,6 +21,10 @@ export interface AgentSpec {
   permanentOverride: boolean | null;
   /** `--prefix` for the pinned session id (`<prefix>.<agentShort>`); null = default to the short hostname. */
   prefix: string | null;
+  /** `--config-dir` → `CLAUDE_CONFIG_DIR` in the harness session env; null = inherit the ambient config.
+   *  Relocates Claude Code's WHOLE config (auth + settings + skills), so the dir must be pre-seeded with the
+   *  auth bits (credentials + settings.json + the ~/.claude.json trust entry) or the agent can't make calls. */
+  configDir: string | null;
 }
 
 /** INTERIM POSTURE: every agent launches `bypassPermissions`. Unattended agents (esp. workers) stall

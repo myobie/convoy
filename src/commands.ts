@@ -8,6 +8,8 @@ import { run } from "./exec.ts";
 import { Bus, isLive } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, type SupervisedSession } from "./host.ts";
 import { discoverSmalltalkDir, nativeLaunch } from "./launch.ts";
+import { compactHookHealth } from "./doctor/hooks.ts";
+import { runReadinessSuite } from "./doctor/suite.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
 import { preflight, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
@@ -160,7 +162,13 @@ function resolveTransport(args: string[]): Transport | null {
 
 // ---- commands ----
 export async function cmdDoctor(args: string[]): Promise<number> {
+  const badFlag = unknownFlag(args, ["--quick"], ["--network"]);
+  if (badFlag) {
+    err(`unrecognized flag "${badFlag}" for \`convoy doctor\`. See \`convoy doctor --help\`.`);
+    return 2;
+  }
   const network = optValue(args, "--network");
+  const quick = hasFlag(args, "--quick");
   let failures = 0;
   const bullet = (ok: boolean | null, s: string): void => out(`  ${ok === null ? "•" : ok ? "✓" : "✗"} ${s}`);
 
@@ -197,17 +205,27 @@ export async function cmdDoctor(args: string[]): Promise<number> {
       : "smalltalk hooks NOT found — set SMALLTALK_DIR or put `st` on PATH; without them `convoy add`/`cos` can't spawn agents",
   );
   if (smalltalk === null) failures++;
+  else {
+    // Compact-readiness: the PreCompact hook must be parse-safe under macOS /bin/bash 3.2 + fail-open, or
+    // /compact wedges the whole session (and, since the hook is shared, the whole network). Non-spawning.
+    const compact = await compactHookHealth(smalltalk);
+    bullet(compact.ok, compact.ok ? compact.detail : `${compact.detail}${compact.fix ? ` — ${compact.fix}` : ""}`);
+    if (!compact.ok) failures++;
+  }
 
   out("Personas");
   bullet(personasInstalled() ? true : null, personasInstalled() ? `base personas installed (${personasDir()})` : "base personas not installed — `convoy personas install` (auto-installed by add/cos)");
 
   out();
-  if (failures === 0) {
-    out("✓ convoy is ready here.");
-    return 0;
+  if (failures > 0) {
+    out(`✗ ${failures} blocking issue${failures === 1 ? "" : "s"} — resolve the ✗ lines above before the readiness checks.`);
+    return 1; // preflight is the gate: don't spawn agents on a broken setup
   }
-  out(`✗ ${failures} blocking issue${failures === 1 ? "" : "s"} — resolve the ✗ lines above.`);
-  return 1;
+  out("✓ convoy is ready here (preflight).");
+  if (quick) return 0; // --quick = preflight only
+
+  // Full setup-readiness suite — spawns isolated throwaway agents; the prod network stays untouched.
+  return runReadinessSuite();
 }
 
 export async function cmdInit(args: string[]): Promise<number> {
@@ -270,7 +288,7 @@ export async function cmdPersonas(args: string[]): Promise<number> {
 }
 
 export async function cmdAdd(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run"], ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--prefix"]);
+  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run"], ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--prefix", "--config-dir"]);
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy add\` — refusing rather than silently ignoring it. See \`convoy add --help\`.`);
     return 2;
@@ -310,6 +328,7 @@ export async function cmdAdd(args: string[]): Promise<number> {
     workingDir: optValue(args, "--dir"),
     permanentOverride: hasFlag(args, "--permanent") ? true : null,
     prefix: optValue(args, "--prefix"),
+    configDir: optValue(args, "--config-dir"),
   };
   out(`convoy add — ${identity}`);
   return launchSpec(spec, { dryRun: hasFlag(args, "--dry-run") });
@@ -330,7 +349,7 @@ async function ensureRepo(path: string, identity: string): Promise<void> {
 }
 
 export async function cmdCos(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run"], ["--repo", "--identity", "--transport", "--network", "--persona", "--prefix"]);
+  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run"], ["--repo", "--identity", "--transport", "--network", "--persona", "--prefix", "--config-dir"]);
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy cos\` — refusing rather than silently ignoring it. See \`convoy cos --help\`.`);
     return 2;
@@ -367,6 +386,7 @@ export async function cmdCos(args: string[]): Promise<number> {
     workingDir: absRepo,
     permanentOverride: null,
     prefix: optValue(args, "--prefix"),
+    configDir: optValue(args, "--config-dir"),
   };
   const rc = await launchSpec(spec, { dryRun });
   if (rc === 0 && !dryRun) out("The CoS will run its first-run interview on boot.");

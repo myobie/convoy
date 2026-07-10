@@ -48,6 +48,7 @@ describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
     workingDir: null,
     permanentOverride: null,
     prefix: "silber",
+    configDir: null,
     ...over,
   });
 
@@ -63,6 +64,29 @@ describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
       expect(toml).toContain("st ding silber.convoy --identity convoy-claude");
       expect(toml).not.toContain("pty send"); // poker gone
       expect(toml).not.toContain("--resume"); // cold start
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--config-dir sets CLAUDE_CONFIG_DIR on the HARNESS session env only, not the ding sidecar", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-ptytoml-cfg-"));
+    try {
+      writePtyToml(dir, spec({ configDir: "/seeded/cfg" }));
+      const toml = readFileSync(join(dir, "pty.toml"), "utf8");
+      expect(toml).toContain('CLAUDE_CONFIG_DIR = "/seeded/cfg"');
+      // exactly once — on the claude session, never duplicated onto the ding session.
+      expect(toml.match(/CLAUDE_CONFIG_DIR/g)?.length).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("no --config-dir → no CLAUDE_CONFIG_DIR in the toml (inherits ambient config)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-ptytoml-nocfg-"));
+    try {
+      writePtyToml(dir, spec());
+      expect(readFileSync(join(dir, "pty.toml"), "utf8")).not.toContain("CLAUDE_CONFIG_DIR");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
