@@ -4,9 +4,9 @@
 // convoy owns agent bootstrap, so it owns pre-trust: mark the folder `hasTrustDialogAccepted` in
 // `~/.claude.json` before spawn. Deterministic, hands-off.
 
-import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 /** Path to Claude Code's per-user config (honors $HOME so it's test-isolable). */
 export function claudeConfigPath(): string {
@@ -62,6 +62,47 @@ export function pretrustDirs(dirs: string[], configDir?: string): { trusted: str
     const tmp = `${path}.convoy-${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(config, null, 2));
     renameSync(tmp, path);
+    return { trusted, failed: [] };
+  } catch {
+    return { trusted: [], failed: dirs };
+  }
+}
+
+/** Path to codex's per-user config (honors $HOME). */
+export function codexConfigPath(): string {
+  return `${process.env["HOME"] ?? homedir()}/.codex/config.toml`;
+}
+
+/** CODEX analog of pretrustDirs. codex checks directory trust in `~/.codex/config.toml` as
+ *  `[projects."<abs>"] trust_level = "trusted"` — and its `--dangerously-bypass-approvals-and-sandbox` does
+ *  NOT skip that prompt, so a codex agent whose dir isn't listed STALLS on "Do you trust this directory?".
+ *  codex canonicalizes the path before the lookup, so we key on realpath (a `/tmp` vs `/private/tmp` mismatch
+ *  would still prompt). We TEXT-APPEND a trusted block for any dir whose `[projects."<abs>"]` header isn't
+ *  already present, rather than parse+rewrite the whole TOML — that preserves the user's existing config +
+ *  comments (a full rewrite would drop them). Idempotent (skips a header already there — codex-written blocks
+ *  are always trusted); atomic (temp+rename); best-effort. */
+export function pretrustDirsCodex(dirs: string[]): { trusted: string[]; failed: string[] } {
+  const path = codexConfigPath();
+  try {
+    const text = existsSync(path) ? readFileSync(path, "utf8") : "";
+    const trusted: string[] = [];
+    const blocks: string[] = [];
+    for (const dir of dirs) {
+      const abs = trustKey(dir);
+      const header = `[projects."${abs}"]`;
+      if (!text.includes(header) && !blocks.some((b) => b.startsWith(header))) {
+        blocks.push(`${header}\ntrust_level = "trusted"`);
+      }
+      trusted.push(abs);
+    }
+    if (blocks.length > 0) {
+      mkdirSync(dirname(path), { recursive: true });
+      const sep = text === "" ? "" : text.endsWith("\n") ? "\n" : "\n\n";
+      const next = `${text}${sep}${blocks.join("\n\n")}\n`;
+      const tmp = `${path}.convoy-${process.pid}.tmp`;
+      writeFileSync(tmp, next);
+      renameSync(tmp, path);
+    }
     return { trusted, failed: [] };
   } catch {
     return { trusted: [], failed: dirs };

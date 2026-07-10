@@ -5,7 +5,7 @@
 
 import { homedir } from "node:os";
 import { dirname } from "node:path";
-import { pretrustDirs } from "./trust.ts";
+import { pretrustDirs, pretrustDirsCodex } from "./trust.ts";
 import {
   classify,
   effectiveLimit,
@@ -86,8 +86,11 @@ export async function up(opts: UpOptions): Promise<number> {
       if (dir) dirs.add(dir);
     }
     if (dirs.size > 0) {
+      // Pre-trust BOTH harness configs for every member — the host doesn't track per-member harness, and a
+      // cross-write is inert (a claude agent's dir listed in ~/.codex is never consulted, and vice versa).
       const { trusted } = pretrustDirs([...dirs]);
-      emit({ type: "pretrust", network: root, dirs: trusted.length }, `[convoy-up] pre-trusted ${trusted.length} member dir(s) before reconcile`);
+      pretrustDirsCodex([...dirs]);
+      emit({ type: "pretrust", network: root, dirs: trusted.length }, `[convoy-up] pre-trusted ${trusted.length} member dir(s) (claude + codex) before reconcile`);
     }
   }
 

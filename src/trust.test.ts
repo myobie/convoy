@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeConfigPath, pretrustDir, pretrustDirs } from "./trust.ts";
+import { claudeConfigPath, codexConfigPath, pretrustDir, pretrustDirs, pretrustDirsCodex } from "./trust.ts";
 
 describe("pretrustDir (Claude Code workspace-trust pre-accept)", () => {
   const savedHome = process.env["HOME"];
@@ -110,5 +110,56 @@ describe("pretrustDir (Claude Code workspace-trust pre-accept)", () => {
     expect(relocated.projects[realpathSync(a)].hasTrustDialogAccepted).toBe(true);
     // the ambient ~/.claude.json was never created for this
     expect(() => readConfig()).toThrow();
+  });
+});
+
+describe("pretrustDirsCodex (codex ~/.codex/config.toml directory-trust pre-accept)", () => {
+  const savedHome = process.env["HOME"];
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "convoy-codex-trust-"));
+    process.env["HOME"] = home;
+  });
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const readCfg = (): string => readFileSync(codexConfigPath(), "utf8");
+  const hasTrustBlock = (dir: string): boolean => readCfg().includes(`[projects."${realpathSync(dir)}"]\ntrust_level = "trusted"`);
+
+  it("creates ~/.codex/config.toml and appends a trusted block per dir, keyed on realpath", () => {
+    const a = join(home, "a");
+    const b = join(home, "b");
+    mkdirSync(a);
+    mkdirSync(b);
+    const { trusted, failed } = pretrustDirsCodex([a, b]);
+    expect(failed).toEqual([]);
+    expect(trusted.length).toBe(2);
+    expect(hasTrustBlock(a)).toBe(true);
+    expect(hasTrustBlock(b)).toBe(true);
+  });
+
+  it("APPENDS — preserves existing config content + comments (no full-TOML rewrite)", () => {
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(codexConfigPath(), '# my settings\nmodel = "gpt-5"\n\n[projects."/other"]\ntrust_level = "trusted"\n');
+    const a = join(home, "a");
+    mkdirSync(a);
+    pretrustDirsCodex([a]);
+    const txt = readCfg();
+    expect(txt).toContain("# my settings"); // comment preserved
+    expect(txt).toContain('model = "gpt-5"'); // setting preserved
+    expect(txt).toContain('[projects."/other"]'); // prior project preserved
+    expect(hasTrustBlock(a)).toBe(true); // new one appended
+  });
+
+  it("is idempotent — a second run adds no duplicate block", () => {
+    const a = join(home, "a");
+    mkdirSync(a);
+    pretrustDirsCodex([a]);
+    const first = readCfg();
+    pretrustDirsCodex([a]);
+    expect(readCfg()).toBe(first); // header already present → nothing appended
   });
 });

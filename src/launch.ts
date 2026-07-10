@@ -12,7 +12,7 @@ import { spawnFromPtyFile } from "./host.ts";
 import { ensureInstalled } from "./personas.ts";
 import { resolvedPersonaPath, sessionId, specPermanent, specPermissionMode, type AgentSpec, type Harness } from "./agent-spec.ts";
 import type { Role } from "./role.ts";
-import { pretrustDir } from "./trust.ts";
+import { pretrustDir, pretrustDirsCodex } from "./trust.ts";
 
 // The pty session key is per-harness: claude → [sessions.claude], codex → [sessions.codex]. (Before,
 // this was hardcoded "claude", so `--harness codex` silently wrote a claude session — a false-harness
@@ -205,9 +205,12 @@ export async function nativeLaunch(spec: AgentSpec): Promise<{ spawned: string[]
   const dir = spec.workingDir ?? process.cwd();
   mkdirSync(dir, { recursive: true });
 
-  // Pre-trust the agent's repo folder so its cold-started claude never hits the workspace-trust dialog
-  // (nothing clears it now that the launch command has no auto-poker). Best-effort — never blocks launch.
-  pretrustDir(dir);
+  // Pre-trust the agent's repo folder so its cold-started harness never hits the workspace-trust dialog
+  // (nothing clears it now that the launch command has no auto-poker). Harness-specific: claude checks
+  // ~/.claude.json, codex checks ~/.codex/config.toml (its --dangerously-bypass flag does NOT skip the
+  // directory-trust prompt). Best-effort — never blocks launch.
+  if (spec.harness === "codex") pretrustDirsCodex([dir]);
+  else pretrustDir(dir);
 
   // Footgun-proof: clone role personas if missing (no override).
   if (spec.personaOverride === null) {
