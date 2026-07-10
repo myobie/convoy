@@ -8,6 +8,7 @@ import { run } from "./exec.ts";
 import { Bus, isLive } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, type SupervisedSession } from "./host.ts";
 import { discoverSmalltalkDir, nativeLaunch } from "./launch.ts";
+import { runReadinessSuite } from "./doctor/suite.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
 import { preflight, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
@@ -160,7 +161,13 @@ function resolveTransport(args: string[]): Transport | null {
 
 // ---- commands ----
 export async function cmdDoctor(args: string[]): Promise<number> {
+  const badFlag = unknownFlag(args, ["--quick"], ["--network"]);
+  if (badFlag) {
+    err(`unrecognized flag "${badFlag}" for \`convoy doctor\`. See \`convoy doctor --help\`.`);
+    return 2;
+  }
   const network = optValue(args, "--network");
+  const quick = hasFlag(args, "--quick");
   let failures = 0;
   const bullet = (ok: boolean | null, s: string): void => out(`  ${ok === null ? "•" : ok ? "✓" : "✗"} ${s}`);
 
@@ -202,12 +209,15 @@ export async function cmdDoctor(args: string[]): Promise<number> {
   bullet(personasInstalled() ? true : null, personasInstalled() ? `base personas installed (${personasDir()})` : "base personas not installed — `convoy personas install` (auto-installed by add/cos)");
 
   out();
-  if (failures === 0) {
-    out("✓ convoy is ready here.");
-    return 0;
+  if (failures > 0) {
+    out(`✗ ${failures} blocking issue${failures === 1 ? "" : "s"} — resolve the ✗ lines above before the readiness checks.`);
+    return 1; // preflight is the gate: don't spawn agents on a broken setup
   }
-  out(`✗ ${failures} blocking issue${failures === 1 ? "" : "s"} — resolve the ✗ lines above.`);
-  return 1;
+  out("✓ convoy is ready here (preflight).");
+  if (quick) return 0; // --quick = preflight only
+
+  // Full setup-readiness suite — spawns isolated throwaway agents; the prod network stays untouched.
+  return runReadinessSuite();
 }
 
 export async function cmdInit(args: string[]): Promise<number> {
