@@ -11,6 +11,7 @@ import { Bus, isLive } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, type SupervisedSession } from "./host.ts";
 import { discoverSmalltalkDir, nativeLaunch } from "./launch.ts";
 import { authReadiness } from "./doctor/auth.ts";
+import { gitUsableCheck, nodeVersionCheck, osCheck, tmpdirSocketCheck } from "./doctor/env.ts";
 import { compactHookHealth } from "./doctor/hooks.ts";
 import { runFullOrgSuite, runReadinessSuite } from "./doctor/suite.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
@@ -176,13 +177,25 @@ export async function cmdDoctor(args: string[]): Promise<number> {
   const full = hasFlag(args, "--full");
   let failures = 0;
   const bullet = (ok: boolean | null, s: string): void => out(`  ${ok === null ? "•" : ok ? "✓" : "✗"} ${s}`);
+  const envBullet = (c: { ok: boolean | null; detail: string; fix?: string }): void => {
+    bullet(c.ok, c.ok === false && c.fix ? `${c.detail} — ${c.fix}` : c.detail);
+    if (c.ok === false) failures++;
+  };
+
+  // Environment — the machine baseline every later step assumes (Node, OS, temp-path length, git). Checked FIRST
+  // + actionable, so a different OS/setup passes or gets a precise fix rather than a cryptic later failure.
+  out("Environment");
+  envBullet(nodeVersionCheck());
+  envBullet(osCheck());
+  envBullet(tmpdirSocketCheck());
+  envBullet(await gitUsableCheck(run));
 
   out("Tooling");
   const st = await whichCmd("st");
   const pty = await whichCmd("pty");
-  bullet(st !== null, st ? `st on PATH (${st})` : "st NOT on PATH — install smalltalk");
+  bullet(st !== null, st ? `st on PATH (${st})` : "st NOT on PATH — run `convoy install-cli` (or install smalltalk)");
   if (!st) failures++;
-  bullet(pty !== null, pty ? `pty on PATH (${pty})` : "pty NOT on PATH — sessions can't be managed");
+  bullet(pty !== null, pty ? `pty on PATH (${pty})` : "pty NOT on PATH — run `convoy install-cli`; sessions can't be managed without it");
   if (!pty) failures++;
 
   out("Bus");
