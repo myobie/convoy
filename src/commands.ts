@@ -211,6 +211,11 @@ export async function cmdDoctor(args: string[]): Promise<number> {
 }
 
 export async function cmdInit(args: string[]): Promise<number> {
+  const badFlag = unknownFlag(args, ["--no-channel"], []);
+  if (badFlag) {
+    err(`unrecognized flag "${badFlag}" for \`convoy init\`. See \`convoy init --help\`.`);
+    return 2;
+  }
   const dir = positionals(args)[0];
   // Fail EARLY on a too-long network path — before creating anything — not cryptically at spawn.
   const pr = checkPtyRoot(dir ?? null);
@@ -391,6 +396,11 @@ export async function cmdLs(args: string[]): Promise<number> {
 }
 
 export async function cmdRemove(args: string[]): Promise<number> {
+  const badFlag = unknownFlag(args, ["--dry-run"], ["--network"]);
+  if (badFlag) {
+    err(`unrecognized flag "${badFlag}" for \`convoy remove\`. See \`convoy remove --help\`.`);
+    return 2;
+  }
   const network = optValue(args, "--network");
   const identity = positionals(args)[0];
   if (!identity) {

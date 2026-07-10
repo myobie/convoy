@@ -4,8 +4,16 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { down, up, type DownOptions, type UpOptions } from "./up.ts";
-import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdInit, cmdLs, cmdPersonas, cmdReload, cmdRemove, hasFlag, optValue, positionals } from "./commands.ts";
+import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdInit, cmdLs, cmdPersonas, cmdReload, cmdRemove, hasFlag, optValue, positionals, unknownFlag } from "./commands.ts";
 import { run } from "./exec.ts";
+
+/** Reject the first flag `convoy <name>` doesn't honor (rc=2) instead of silently ignoring it. */
+function rejectUnknown(name: string, args: string[], bool: string[], value: string[]): number | null {
+  const bad = unknownFlag(args, bool, value);
+  if (bad === null) return null;
+  process.stderr.write(`convoy: unrecognized flag "${bad}" for \`convoy ${name}\`. See \`convoy --help\`.\n`);
+  return 2;
+}
 
 /** `<semver>` or `<semver>+<short-sha>` when a git sha is available. */
 export function formatVersion(semver: string, shortSha: string | null): string {
@@ -77,6 +85,8 @@ export async function main(argv: string[]): Promise<void> {
 }
 
 async function cmdUp(args: string[]): Promise<number> {
+  const bad = rejectUnknown("up", args, ["--json", "--once", "--keep-sessions"], ["--reconcile-interval", "--fast-fail-window", "--fast-fail-limit"]);
+  if (bad !== null) return bad;
   const opts: UpOptions = {};
   const num = (v: string | null): number | undefined => (v === null ? undefined : Number(v));
   opts.json = hasFlag(args, "--json");
@@ -90,6 +100,8 @@ async function cmdUp(args: string[]): Promise<number> {
 }
 
 async function cmdDown(args: string[]): Promise<number> {
+  const bad = rejectUnknown("down", args, ["--json", "--dry-run", "--force"], []);
+  if (bad !== null) return bad;
   const opts: DownOptions = {};
   opts.json = hasFlag(args, "--json");
   opts.dryRun = hasFlag(args, "--dry-run");
