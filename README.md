@@ -19,35 +19,44 @@ The guiding requirement: **it must be impossible to misconfigure an agent.** `co
 
 ## Getting Started
 
-convoy runs from source on **Node ≥ 23.6** (it strips the TS types at load — no build step). It orchestrates `st` (smalltalk) and `pty`, and **file-depends on `pty`**, so clone the four repos **as siblings** in one parent directory:
+convoy runs from source on **Node ≥ 23.6** (it strips the TS types at load — no build step) and works on **macOS + Linux**. It orchestrates `st` (smalltalk) and `pty`, and **file-depends on `pty`**, so clone the four repos **as siblings** in one parent directory. Every step below is copy-pasteable; `convoy doctor --quick` at the end confirms your machine is actually ready.
+
+**1. Clone the four repos as siblings:**
 
 ```sh
-# e.g. under ~/src/github.com/compoundingtech
+# pick a parent dir, e.g. ~/src/github.com/compoundingtech, and clone all four INTO it
 git clone https://github.com/compoundingtech/pty
 git clone https://github.com/compoundingtech/smalltalk
 git clone https://github.com/compoundingtech/personas
 git clone https://github.com/compoundingtech/convoy
-
-# build pty — REQUIRED (convoy imports @myobie/pty from ../pty via a file: dependency)
-cd pty && npm install && npm run build && cd ..
-
-# install smalltalk + convoy
-( cd smalltalk && npm install )
-( cd convoy && npm install )
-
-# put st, pty, and convoy on your PATH — `npm link` in each repo, or symlink their
-# bin/ entrypoints (smalltalk/bin/st, pty/bin/pty, convoy/bin/convoy)
 ```
 
-Then stand up a network:
+**2. Build pty, then install smalltalk + convoy:**
 
 ```sh
-convoy doctor --quick            # preflight: tools, bus, hooks (incl /compact-safety), personas, PTY_ROOT length, harness signed-in (real auth probe)
-convoy init ~/nets/demo          # use a SHORT path: PTY_ROOT (<net>/pty) must be ≤ 90 bytes
-convoy cos --repo ~/cos --network ~/nets/demo   # bootstraps + boots a Chief of Staff (available in ~30s)
+( cd pty && npm install && npm run build )   # REQUIRED — convoy imports @myobie/pty from ../pty
+( cd smalltalk && npm install )
+( cd convoy && npm install )
 ```
 
-Run `convoy doctor --quick` first — the preflight fails loud on anything missing (a too-long network path, `st`/`pty` off PATH, undiscoverable hooks, a `/compact`-breaking hook) instead of a cryptic error at spawn. Then, when you want proof the whole thing works, run the full `convoy doctor` (fast per-mechanism checks) — and `convoy doctor --full` for the real-org proof (your real CoS→supervisor→worker run the whole lifecycle autonomously; opt-in, takes minutes). See [Commands](#commands).
+**3. Put `convoy`, `st`, `pty` on your PATH — reliably:**
+
+```sh
+node convoy/bin/convoy install-cli   # symlinks all three into ~/.local/bin (override: --bin <dir>)
+```
+
+`install-cli` runs through `node` so it works before `convoy` is on PATH, is idempotent, and prints the exact **shell-specific** line to add `~/.local/bin` to your PATH if it isn't already (then restart your shell). **Do not use `npm link`** — a global `npm link` can pollute the shared `@myobie/pty` symlink and silently break ding delivery for the whole network.
+
+**4. Confirm the machine is ready, then stand up a network:**
+
+```sh
+convoy doctor --quick            # the "will this work on MY machine?" gate (see below)
+convoy init ~/nets/demo          # use a SHORT path: PTY_ROOT (<net>/pty) must be ≤ 90 bytes
+convoy cos --repo ~/cos --network ~/nets/demo   # bootstraps + boots a Chief of Staff (~30s)
+convoy up ~/nets/demo            # host the network
+```
+
+`convoy doctor --quick` verifies **every cross-machine assumption up front** — Node ≥ 23.6, OS, a short-enough TMPDIR (pty sockets have a ~104-byte limit), `git`, `st`/`pty`/`convoy` on PATH, the bus round-trips, hooks discoverable + `/compact`-safe, personas present, and a **real signed-in auth probe** per harness (a credential can be present on disk but revoked, so a file check would pass while actually signed out) — each with an **actionable fix** instead of a cryptic failure at spawn. When you want proof the whole thing works end to end, run the full `convoy doctor` (fast per-mechanism checks) — and `convoy doctor --full` for the real-org proof (your real CoS→supervisor→worker run the whole lifecycle autonomously; opt-in, takes minutes). See [Commands](#commands).
 
 ## Commands
 
@@ -58,6 +67,7 @@ Run `convoy doctor --quick` first — the preflight fails loud on anything missi
 - `convoy down [network] [--dry-run] [--force] [--json]` — **tear down the network**: the *only* command that kills sessions. Refuses while a `convoy up` host holds the network (it would respawn what you kill) unless `--force`.
 - `convoy reload <id> [--dry-run]` — re-materialize an agent from its `pty.toml` (kill + respawn), picking up edits to its permission-mode / persona / ding wiring.
 - `convoy pretrust <dir> [<dir>...] [--config-dir <path>]` — batch **pre-trust** agent working dirs in one atomic write, so a caller that spawns **multiple agents back-to-back** doesn't hit the workspace-trust race (see below). Call it once, with every dir, before the first `convoy add`. Config-dir-agnostic (writes the ambient `~/.claude.json`); pass `--config-dir` only for agents that will run under `CLAUDE_CONFIG_DIR`.
+- `convoy install-cli [--bin <dir>]` — symlink `convoy` + `st` + `pty` (from their sibling repos) onto your PATH (default `~/.local/bin`), **reliably + idempotently, without `npm link`** (the global-symlink footgun that once broke ding delivery network-wide). Run it the first time via `node <convoy-clone>/bin/convoy install-cli`; it verifies the links and prints the shell-specific PATH line if the dir isn't on PATH yet. Portable (macOS + Linux).
 - `convoy init [dir]` — create + wire a smalltalk network folder (ST_ROOT, bus layout, hooks).
 - `convoy doctor [--quick] [--full]` — the **setup-readiness suite**: proves your machine can do real agent work. A fast **preflight gate** (`st`/`pty` on PATH, bus round-trips, PTY_ROOT length, hooks discoverable + `/compact`-safe, personas present, and a **real signed-in auth probe** per installed harness — a tiny live call, because a credential can be present on disk but revoked, so a file check would pass while actually signed out) — `--quick` stops here — then the **readiness checks**, each spun in an isolated throwaway network that never touches your prod network (it snapshots prod pty sessions before/after and asserts zero delta): a tmp network stands up + tears down; inbox+ding delivery works end-to-end; agent state externalizes + is reconstructed after a cold restart; inbox processing stays exactly-once across a restart; and a CoS→supervisor→worker tree fixes a real bundled bug, graded held-out (the fix behaves + is mutation-valid, delegation is visible on the bus, only the worker commits). These use **thin deterministic stand-ins** for the two upper tiers — fast per-mechanism health. **`--full`** is the complementary **real-org proof**: your **real** chief-of-staff + supervisor + worker, hosted under `convoy up`, run the whole lifecycle autonomously end-to-end — hands-off bring-up (first-run interview pre-seeded away, dirs pre-trusted, no prompts), an autonomous CoS→supervisor→worker delegation chain visible on the bus, a mutation-valid graded worker fix, restart-continuity (a cold no-`--resume` restart reconstructs from externalized `now.md` state and *straddles* the restart), and a clean teardown that leaves prod **sessions, durable crons, and trust config** untouched. Run the default for fast mechanism health; run `--full` (opt-in — a real multi-agent run takes minutes) when you want the real-org assurance that "when *you* `convoy init` + `convoy up`, it works." Every check is self-cleaning; failures are named + localize to a gate.
 - `convoy ls [--live-only]` — list the convoy's members.

@@ -36,6 +36,13 @@ export async function compactHookHealth(smalltalkDir: string): Promise<HookHealt
   if (!existsSync(shim)) return { ok: false, detail: `PreCompact hook missing (${shim})`, fix: "reinstall smalltalk's Claude Code hooks — without pre-compact.sh /compact has no state flush" };
   if (!existsSync(impl)) return { ok: false, detail: "PreCompact shim present but its sibling pre-compact.impl.sh is MISSING (a half-installed #80 hook)", fix: `install pre-compact.impl.sh next to pre-compact.sh in ${hooks} — the shim finds no impl and silently skips the flush` };
 
+  // The bash-specific probes below target macOS's ancient /bin/bash 3.2 (the parse-close class that wedged
+  // /compact). On a machine with NO /bin/bash (some minimal Linux) that class can't apply — skip rather than
+  // false-fail the preflight. Where /bin/bash IS present (macOS 3.2 or a modern Linux bash) the probes run.
+  if (!existsSync("/bin/bash")) {
+    return { ok: true, detail: "PreCompact hook present (shim + impl); /bin/bash absent, so the macOS bash-3.2 parse-close class doesn't apply here — skipped the bash-specific probe" };
+  }
+
   // 2) PARSE-SAFE under the REAL macOS /bin/bash 3.2 (never a modern `bash`), which Claude Code uses for hooks.
   for (const p of [shim, impl]) {
     const parse = await run("/bin/bash", ["-n", p]);
