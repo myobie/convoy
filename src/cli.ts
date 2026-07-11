@@ -86,7 +86,7 @@ export async function main(argv: string[]): Promise<void> {
 }
 
 async function cmdUp(args: string[]): Promise<number> {
-  const bad = rejectUnknown("up", args, ["--json", "--once", "--keep-sessions"], ["--reconcile-interval", "--fast-fail-window", "--fast-fail-limit"]);
+  const bad = rejectUnknown("up", args, ["--json", "--once", "--keep-sessions"], ["--reconcile-interval", "--fast-fail-window", "--fast-fail-limit", "--notify"]);
   if (bad !== null) return bad;
   const opts: UpOptions = {};
   const num = (v: string | null): number | undefined => (v === null ? undefined : Number(v));
@@ -96,6 +96,8 @@ async function cmdUp(args: string[]): Promise<number> {
   opts.reconcileInterval = num(optValue(args, "--reconcile-interval"));
   opts.fastFailWindow = num(optValue(args, "--fast-fail-window"));
   opts.fastFailLimit = num(optValue(args, "--fast-fail-limit"));
+  // Extra crash/flap ding recipients on top of the auto-derived orchestrators (permanent members).
+  opts.notify = (optValue(args, "--notify") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   opts.network = positionals(args)[0];
   return up(opts);
 }
