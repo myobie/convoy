@@ -11,6 +11,7 @@ import { Bus, isLive } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, type SupervisedSession } from "./host.ts";
 import { discoverSmalltalkDir, nativeLaunch } from "./launch.ts";
 import { authReadiness } from "./doctor/auth.ts";
+import { claudeCheckup } from "./doctor/checkup.ts";
 import { gitUsableCheck, nodeVersionCheck, osCheck, tmpdirSocketCheck } from "./doctor/env.ts";
 import { compactHookHealth } from "./doctor/hooks.ts";
 import { runFullOrgSuite, runReadinessSuite } from "./doctor/suite.ts";
@@ -289,6 +290,18 @@ export async function cmdDoctor(args: string[]): Promise<number> {
   if (authOutcomes.every((o) => o.ok === null)) {
     bullet(false, "no supported harness (claude/codex) installed — install one so agents can run");
     failures++;
+  }
+
+  // Claude Code checkup — ADVISORY, complementary to the network-side checks above (it covers the CLAUDE-CODE
+  // side: install health, invalid settings files, unused extensions, duplicate subagent names, Remote Control).
+  // NOT gated on convoy's pass/fail — `claude doctor` emits text with no structured output/exit code to gate on.
+  // Version-gated (claude ≥ 2.1.205); older/absent → a clean note, never a failure.
+  out("Claude Code checkup (advisory — not gated)");
+  const checkup = await claudeCheckup();
+  bullet(null, checkup.note);
+  if (checkup.state === "ran" && checkup.text) {
+    for (const line of checkup.text.split("\n")) out(`      ${line}`);
+    if (checkup.recommend) bullet(null, checkup.recommend);
   }
 
   out();
