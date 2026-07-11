@@ -55,6 +55,7 @@ export interface SupervisedSession {
   args: string[];
   status: SessionInfo["status"];
   exitedAt: Date | null;
+  exitCode: number | null; // the process exit code when the daemon wrote an exit record (null if none / vanished)
   tags: Record<string, string>;
 }
 
@@ -67,6 +68,7 @@ export function toSupervised(i: SessionInfo): SupervisedSession {
     args: m?.args ?? [],
     status: i.status,
     exitedAt: m?.exitedAt ? new Date(m.exitedAt) : null,
+    exitCode: typeof m?.exitCode === "number" ? m.exitCode : null,
     tags: m?.tags ?? {},
   };
 }

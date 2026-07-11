@@ -48,6 +48,13 @@ export function busIdOf(s: SupervisedSession): string | null {
   }
 }
 
+/** Did a gone WORKER (non-permanent) session CRASH (→ ding) vs exit cleanly (→ silent)? The negative-control
+ *  gate cos made hard: a nonzero exitCode (the process failed) or a `vanished` hard death dings; a clean exit
+ *  (code 0 = the worker finished its task) stays SILENT. Pure → unit-testable. */
+export function workerCrashed(status: SupervisedSession["status"], exitCode: number | null): boolean {
+  return status === "vanished" || (exitCode !== null && exitCode !== 0);
+}
+
 /** The ORCHESTRATORS to ding when a session crash-loops or gives up: convoy can't read a role off a pty session,
  *  but permanence is a clean proxy — the CoS + supervisors run `--permanent`, workers don't — so the permanent
  *  convoy agents ARE the cos+supervisor tier. Plus any explicit `notify` ids. The crashing agent itself is
@@ -154,6 +161,7 @@ export async function up(opts: UpOptions): Promise<number> {
   const state = new Map<string, StrategyTags>();
   const permanentKeys = new Set<string>();
   const supervised = new Set<string>();
+  const workerDinged = new Set<string>(); // gone workers aren't respawned → dedup so we ding each once
   const notify = opts.notify ?? [];
   const dingTargets = (sessions: readonly SupervisedSession[], crasherBusId: string | null): string[] => crashDingTargets(sessions, crasherBusId, notify, busIdOf);
 
@@ -162,7 +170,31 @@ export async function up(opts: UpOptions): Promise<number> {
     const sessions = await host.sessions();
     for (const s of sessions) {
       if (isPermanent(s)) permanentKeys.add(s.name);
-      if (!isPermanent(s) && !permanentKeys.has(s.name)) continue;
+      const permanent = isPermanent(s) || permanentKeys.has(s.name);
+
+      // WORKER-CRASH: a gone NON-permanent convoy agent (a worker). convoy up does NOT respawn it — workers are
+      // ephemeral (Nomad no-respawn) — but a CRASH is ding-worthy so its supervisor + cos know. Gate on the exit
+      // (workers have no fast-fail loop, since they're never respawned): a nonzero exitCode or a hard `vanished`
+      // death dings; a CLEAN exit (code 0 = the worker finished its task) stays SILENT (routine). Dedup: a gone
+      // worker re-appears every tick, so ding ONCE. Target = cos + all permanent supervisors (no spawner tag
+      // exists to derive the specific owner yet — a follow-up).
+      if (!permanent && s.tags["ptyfile.session"] !== undefined) {
+        if (!gone(s) || workerDinged.has(s.name)) continue;
+        workerDinged.add(s.name); // mark regardless — a clean-exit worker must not be re-checked either
+        if (!workerCrashed(s.status, s.exitCode)) continue; // routine clean exit (code 0) → silent
+        const id = busIdOf(s) ?? logicalId(s);
+        const reason = s.status === "vanished" ? "vanished (hard death — no exit record)" : `exit ${s.exitCode}`;
+        const targets = dingTargets(sessions, busIdOf(s));
+        const body = `Worker ${id} CRASHED (${reason}) on network ${root} — it is NOT auto-respawned (workers are ephemeral). NEEDS ATTENTION: its supervisor should decide whether to re-spawn or redirect it. Inspect: pty peek ${s.name}.`;
+        for (const t of targets) await sendDing(root, t, `worker crash: ${id}`, body);
+        emit(
+          { type: "worker_crash", identity: id, session: s.name, exitCode: s.exitCode, status: s.status, dinged: targets.length, ts: isoString(now) },
+          `[convoy-up] worker crash ${id} session=${s.name} (${reason}) — dinged ${targets.length} orchestrator(s)`,
+        );
+        continue;
+      }
+
+      if (!permanent) continue; // a non-convoy-agent, non-permanent session — not ours to supervise
       supervised.add(s.name);
       if (!gone(s)) continue;
 

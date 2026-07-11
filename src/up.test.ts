@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { crashDingTargets } from "./up.ts";
+import { crashDingTargets, workerCrashed } from "./up.ts";
 import type { SupervisedSession } from "./host.ts";
 
-const sess = (name: string, tags: Record<string, string>): SupervisedSession => ({ name, cwd: null, command: "", args: [], status: "running" as never, exitedAt: null, tags });
+const sess = (name: string, tags: Record<string, string>): SupervisedSession => ({ name, cwd: null, command: "", args: [], status: "running" as never, exitedAt: null, exitCode: null, tags });
 // Test resolver: read the bus id from a plain "busId" tag (the real one reads ST_AGENT out of the pty.toml).
 const resolve = (s: SupervisedSession): string | null => s.tags["busId"] ?? null;
 
@@ -37,5 +37,21 @@ describe("crashDingTargets — who gets the crash/flap ding", () => {
       sess("mystery", { "ptyfile.session": "claude", strategy: "permanent" }), // no busId → resolve() null
     ];
     expect(crashDingTargets(sessions, null, [], resolve)).toEqual(["cos-claude"]);
+  });
+});
+
+describe("workerCrashed — the worker negative-control gate (crash → ding, clean exit → silent)", () => {
+  it("a nonzero exit is a crash (dings)", () => {
+    expect(workerCrashed("exited", 1)).toBe(true);
+    expect(workerCrashed("exited", 137)).toBe(true); // OOM-kill signal
+  });
+  it("a CLEAN exit (code 0) is NOT a crash (stays silent) — the hard negative control", () => {
+    expect(workerCrashed("exited", 0)).toBe(false);
+  });
+  it("a hard 'vanished' death (no exit record) is a crash", () => {
+    expect(workerCrashed("vanished", null)).toBe(true);
+  });
+  it("no exit code + still running is not a crash", () => {
+    expect(workerCrashed("running", null)).toBe(false);
   });
 });
