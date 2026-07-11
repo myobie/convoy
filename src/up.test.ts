@@ -51,6 +51,9 @@ describe("workerCrashed — the worker negative-control gate (crash → ding, cl
   it("a hard 'vanished' death (no exit record) is a crash", () => {
     expect(workerCrashed("vanished", null)).toBe(true);
   });
+  it("a NULL exit (child SIGKILLed, no exit code recorded — e.g. an OOM kill) is a crash — the (b) fix", () => {
+    expect(workerCrashed("exited", null)).toBe(true); // previously silent → missed OOM crashes
+  });
   it("no exit code + still running is not a crash", () => {
     expect(workerCrashed("running", null)).toBe(false);
   });

@@ -48,11 +48,12 @@ export function busIdOf(s: SupervisedSession): string | null {
   }
 }
 
-/** Did a gone WORKER (non-permanent) session CRASH (→ ding) vs exit cleanly (→ silent)? The negative-control
- *  gate cos made hard: a nonzero exitCode (the process failed) or a `vanished` hard death dings; a clean exit
- *  (code 0 = the worker finished its task) stays SILENT. Pure → unit-testable. */
+/** Did a gone WORKER (non-permanent) session CRASH (→ ding) vs exit cleanly (→ silent)? ONLY a clean exit (status
+ *  "exited" with code 0) stays SILENT; everything else — nonzero exit, NULL exit (child SIGKILLed with no record,
+ *  e.g. an OOM kill), or a hard `vanished` death — DINGS. (Missing an OOM-killed worker was a false NEGATIVE,
+ *  worse than the accepted deliberate-kill false-positive.) Pure → unit-testable. */
 export function workerCrashed(status: SupervisedSession["status"], exitCode: number | null): boolean {
-  return status === "vanished" || (exitCode !== null && exitCode !== 0);
+  return status === "vanished" || (status === "exited" && exitCode !== 0); // exitCode !== 0 covers nonzero AND null (OOM SIGKILL)
 }
 
 /** The ORCHESTRATORS to ding when a session crash-loops or gives up: convoy can't read a role off a pty session,
