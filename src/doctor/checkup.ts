@@ -111,9 +111,18 @@ function timedRun(cmd: string, args: string[], timeoutMs = 15_000): Promise<Exec
   });
 }
 
-/** Run ONE harness's checkup (advisory, read-only, version/capability-gated, with LLM-distill of any issues).
- *  Never throws. Runner injectable for tests. */
-export async function harnessCheckup(harness: Harness, runner: Runner = timedRun): Promise<CheckupResult> {
+/** How many issues a doctor's raw output flags (warning/error glyphs; at least 1 when hasActionableIssues). */
+export function countIssues(raw: string): number {
+  const glyphs = (raw.match(/[⚠✗✘❌]/gu) ?? []).length;
+  return glyphs > 0 ? glyphs : 1;
+}
+
+/** Run ONE harness's checkup (advisory, read-only, version/capability-gated). `distill` controls the ISSUES case:
+ *  when true (the full `convoy doctor`), the issues are LLM-distilled to 1-3 actionable bullets by that harness's
+ *  own CLI; when false (the fast, LLM-FREE `--quick` preflight), it stays deterministic — just the issue COUNT +
+ *  a pointer to the full doctor for the distilled explanation. A clean result is a one-liner either way. Never
+ *  throws. Runner injectable for tests. */
+export async function harnessCheckup(harness: Harness, distill: boolean, runner: Runner = timedRun): Promise<CheckupResult> {
   const spec = SPECS[harness];
   const base = { harness, label: spec.label };
 
@@ -134,24 +143,32 @@ export async function harnessCheckup(harness: Harness, runner: Runner = timedRun
     return { ...base, state: "no-doctor", version: v, note: `${spec.label} ${v} — \`${spec.bin} doctor\` produced no output (may be an older ${spec.bin})` };
   }
 
-  // Distill only when there are actionable issues; a clean result is a concise one-liner (no LLM call, no dump).
+  // A clean result is a concise one-liner either way (no LLM call, no dump).
   if (!hasActionableIssues(raw)) {
     return { ...base, state: "ran", version: v, note: `${spec.label} ${v} — \`${spec.bin} doctor\`: no issues found` };
   }
-  const distill = await runner(spec.bin, spec.distillArgs(DISTILL_PROMPT(spec.bin, raw)), 25_000);
-  const summary = distill.ok ? distill.stdout.trim() : "";
+
+  // Has issues. In the LLM-FREE mode (--quick), stay fast + deterministic: report the count + point at the full
+  // doctor. Only the full `convoy doctor` pays the LLM to distill (advisory, slow, non-deterministic).
+  const n = countIssues(raw);
+  if (!distill) {
+    return { ...base, state: "ran", version: v, note: `${spec.label} ${v} — \`${spec.bin} doctor\`: ${n} issue${n === 1 ? "" : "s"} — run \`convoy doctor\` for the distilled explanation` };
+  }
+  const d = await runner(spec.bin, spec.distillArgs(DISTILL_PROMPT(spec.bin, raw)), 25_000);
+  const summary = d.ok ? d.stdout.trim() : "";
   return {
     harness,
     label: spec.label,
     state: "ran",
     version: v,
     ...(summary ? { distilled: summary } : { raw }), // distilled summary, or FALL BACK to raw text
-    note: summary ? `${spec.label} ${v} — \`${spec.bin} doctor\` (distilled; advisory, not gated):` : `${spec.label} ${v} — \`${spec.bin} doctor\` (advisory, not gated; distill unavailable — raw):`,
+    note: summary ? `${spec.label} ${v} — \`${spec.bin} doctor\` (${n} issue${n === 1 ? "" : "s"}, distilled; advisory, not gated):` : `${spec.label} ${v} — \`${spec.bin} doctor\` (advisory, not gated; distill unavailable — raw):`,
     recommend: spec.recommend,
   };
 }
 
-/** Run the installed harnesses' checkups in PARALLEL (latency = the slowest single harness, not the sum). */
-export async function harnessCheckups(runner: Runner = timedRun): Promise<CheckupResult[]> {
-  return Promise.all((["claude", "codex"] as Harness[]).map((h) => harnessCheckup(h, runner)));
+/** Run the installed harnesses' checkups in PARALLEL (latency = the slowest single harness, not the sum).
+ *  `distill` (= NOT --quick) gates the LLM distill of any issues onto the full `convoy doctor` only. */
+export async function harnessCheckups(distill: boolean, runner: Runner = timedRun): Promise<CheckupResult[]> {
+  return Promise.all((["claude", "codex"] as Harness[]).map((h) => harnessCheckup(h, distill, runner)));
 }

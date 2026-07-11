@@ -217,7 +217,7 @@ export async function cmdDoctor(args: string[]): Promise<number> {
   // the checkup also an LLM distill) — UP FRONT, so they run CONCURRENTLY with each other AND overlap the fast
   // checks below. Awaited at their print points; otherwise --quick would pay ~8-12s of LLM latency in series.
   const authP = usedHarnesses(network).then((used) => authReadiness(undefined, undefined, (h) => used.has(h)));
-  const checkupsP = harnessCheckups();
+  const checkupsP = harnessCheckups(!quick); // distill the harness-doctor issues on the FULL doctor only; --quick stays LLM-free
 
   // Environment — the machine baseline every later step assumes (Node, OS, temp-path length, git). Checked FIRST
   // + actionable, so a different OS/setup passes or gets a precise fix rather than a cryptic later failure.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { harnessCheckup, hasActionableIssues, parseVersion, versionGte, type Runner } from "./checkup.ts";
+import { countIssues, harnessCheckup, hasActionableIssues, parseVersion, versionGte, type Runner } from "./checkup.ts";
 import type { ExecResult } from "../exec.ts";
 
 const exec = (over: Partial<ExecResult>): ExecResult => ({ status: 0, stdout: "", stderr: "", get ok() { return this.status === 0; }, ...over });
@@ -35,7 +35,7 @@ describe("hasActionableIssues", () => {
 describe("harnessCheckup (injected runner — advisory, never throws)", () => {
   it("absent harness → 'unavailable', no doctor run", async () => {
     const runner: Runner = async () => exec({ status: 127, stderr: "not found" });
-    const r = await harnessCheckup("claude", runner);
+    const r = await harnessCheckup("claude", true, runner);
     expect(r.state).toBe("unavailable");
   });
 
@@ -45,7 +45,7 @@ describe("harnessCheckup (injected runner — advisory, never throws)", () => {
       if (args[0] === "doctor") ranDoctor = true;
       return exec({ stdout: "2.1.100 (Claude Code)" });
     };
-    const r = await harnessCheckup("claude", runner);
+    const r = await harnessCheckup("claude", true, runner);
     expect(r.state).toBe("too-old");
     expect(ranDoctor).toBe(false);
   });
@@ -58,7 +58,7 @@ describe("harnessCheckup (injected runner — advisory, never throws)", () => {
       calledDistill = true; // -p distill
       return exec({ stdout: "should not be called" });
     };
-    const r = await harnessCheckup("claude", runner);
+    const r = await harnessCheckup("claude", true, runner);
     expect(r.state).toBe("ran");
     expect(r.note).toMatch(/no issues found/i); // clean → a concise one-liner, not a raw dump
     expect(r.raw).toBeUndefined();
@@ -72,7 +72,7 @@ describe("harnessCheckup (injected runner — advisory, never throws)", () => {
       if (args[0] === "doctor") return exec({ stdout: "⚠ mcp  MCP configuration has optional issues\n⚠ threads  rollout scan incomplete" });
       return exec({ stdout: "- MCP: set the missing env vars\n- threads: re-run the rollout scan" }); // exec distill
     };
-    const r = await harnessCheckup("codex", runner);
+    const r = await harnessCheckup("codex", true, runner);
     expect(r.state).toBe("ran");
     expect(r.distilled).toMatch(/MCP: set the missing env vars/);
     expect(r.raw).toBeUndefined(); // distilled, not raw
@@ -85,10 +85,42 @@ describe("harnessCheckup (injected runner — advisory, never throws)", () => {
       if (args[0] === "doctor") return exec({ stdout: "⚠ mcp  something is wrong" });
       return exec({ status: 1, stderr: "distill timed out" }); // distill fails
     };
-    const r = await harnessCheckup("codex", runner);
+    const r = await harnessCheckup("codex", true, runner);
     expect(r.state).toBe("ran");
     expect(r.distilled).toBeUndefined();
     expect(r.raw).toMatch(/something is wrong/); // fell back to raw
     expect(r.note).toMatch(/raw/i);
+  });
+});
+
+describe("--quick lean mode (distill=false): raw/LLM-free — count + pointer, no LLM call", () => {
+  it("issues + distill=false → reports the issue COUNT + 'run convoy doctor', and does NOT call the LLM", async () => {
+    let calledDistill = false;
+    const runner: Runner = async (_c, args) => {
+      if (args[0] === "--version") return exec({ stdout: "codex-cli 0.142.5" });
+      if (args[0] === "doctor") return exec({ stdout: "⚠ mcp  optional issues\n⚠ threads  scan incomplete" });
+      calledDistill = true;
+      return exec({ stdout: "should not be called on --quick" });
+    };
+    const r = await harnessCheckup("codex", false, runner);
+    expect(r.state).toBe("ran");
+    expect(r.note).toMatch(/2 issues/); // the count
+    expect(r.note).toMatch(/run `convoy doctor`/i); // the pointer to the full doctor
+    expect(r.distilled).toBeUndefined();
+    expect(r.raw).toBeUndefined();
+    expect(calledDistill).toBe(false); // LLM-FREE on --quick
+  });
+  it("clean + distill=false → still a one-liner, no LLM", async () => {
+    const runner: Runner = async (_c, args) =>
+      args[0] === "--version" ? exec({ stdout: "2.1.207 (Claude Code)" }) : exec({ stdout: "No installation issues found." });
+    const r = await harnessCheckup("claude", false, runner);
+    expect(r.note).toMatch(/no issues found/i);
+  });
+});
+
+describe("countIssues", () => {
+  it("counts warning/error glyphs, at least 1 for a keyword-only match", () => {
+    expect(countIssues("⚠ a\n⚠ b\n✗ c")).toBe(3);
+    expect(countIssues("settings.json is invalid")).toBe(1); // no glyph but hasActionableIssues → floor 1
   });
 });
