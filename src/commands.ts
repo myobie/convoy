@@ -11,7 +11,7 @@ import { Bus, isLive } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, type SupervisedSession } from "./host.ts";
 import { discoverSmalltalkDir, nativeLaunch } from "./launch.ts";
 import { authReadiness } from "./doctor/auth.ts";
-import { claudeCheckup } from "./doctor/checkup.ts";
+import { harnessCheckups } from "./doctor/checkup.ts";
 import { gitUsableCheck, nodeVersionCheck, osCheck, tmpdirSocketCheck } from "./doctor/env.ts";
 import { compactHookHealth } from "./doctor/hooks.ts";
 import { runFullOrgSuite, runReadinessSuite } from "./doctor/suite.ts";
@@ -213,6 +213,12 @@ export async function cmdDoctor(args: string[]): Promise<number> {
     if (c.ok === false) failures++;
   };
 
+  // Kick off the two LLM-heavy legs — the auth probe + the harness checkups (each with a `claude`/`codex` call,
+  // the checkup also an LLM distill) — UP FRONT, so they run CONCURRENTLY with each other AND overlap the fast
+  // checks below. Awaited at their print points; otherwise --quick would pay ~8-12s of LLM latency in series.
+  const authP = usedHarnesses(network).then((used) => authReadiness(undefined, undefined, (h) => used.has(h)));
+  const checkupsP = harnessCheckups();
+
   // Environment — the machine baseline every later step assumes (Node, OS, temp-path length, git). Checked FIRST
   // + actionable, so a different OS/setup passes or gets a precise fix rather than a cryptic later failure.
   out("Environment");
@@ -281,8 +287,7 @@ export async function cmdDoctor(args: string[]): Promise<number> {
   // harness(es) this setup USES (from the network, or claude when fresh) — an installed-but-unused harness that's
   // signed out is a WARN, so a claude-only setup with codex merely installed still passes green.
   out("Auth");
-  const used = await usedHarnesses(network);
-  const authOutcomes = await authReadiness(undefined, undefined, (h) => used.has(h));
+  const authOutcomes = await authP; // kicked off up front; overlaps the fast checks above
   for (const o of authOutcomes) {
     bullet(o.ok, o.ok === false && o.fix ? `${o.detail} — ${o.fix}` : o.detail);
     if (o.ok === false) failures++;
@@ -292,16 +297,17 @@ export async function cmdDoctor(args: string[]): Promise<number> {
     failures++;
   }
 
-  // Claude Code checkup — ADVISORY, complementary to the network-side checks above (it covers the CLAUDE-CODE
-  // side: install health, invalid settings files, unused extensions, duplicate subagent names, Remote Control).
-  // NOT gated on convoy's pass/fail — `claude doctor` emits text with no structured output/exit code to gate on.
-  // Version-gated (claude ≥ 2.1.205); older/absent → a clean note, never a failure.
-  out("Claude Code checkup (advisory — not gated)");
-  const checkup = await claudeCheckup();
-  bullet(null, checkup.note);
-  if (checkup.state === "ran" && checkup.text) {
-    for (const line of checkup.text.split("\n")) out(`      ${line}`);
-    if (checkup.recommend) bullet(null, checkup.recommend);
+  // Harness checkups — ADVISORY, complementary to the network-side checks above. Each installed harness's own
+  // doctor (`claude doctor` / `codex doctor`) covers the HARNESS side (install health, invalid settings, unused
+  // extensions, duplicate subagents, auth/runtime); its issues are LLM-distilled by that harness's own CLI. NOT
+  // gated on convoy's pass/fail (these doctors emit text with no structured output/exit code). Version/capability
+  // -gated; an absent/old harness → a clean note, never a failure. Both run in parallel.
+  out("Harness checkups (advisory — not gated)");
+  for (const c of await checkupsP) {
+    bullet(null, c.note);
+    const body = c.distilled ?? c.raw ?? "";
+    for (const line of body.split("\n").filter(Boolean)) out(`      ${line}`);
+    if (c.recommend) bullet(null, c.recommend);
   }
 
   out();

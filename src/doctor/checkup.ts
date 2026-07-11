@@ -1,15 +1,20 @@
-// Claude Code checkup — surface `claude doctor` (the CLI form of the in-session `/doctor`, alias `/checkup`) as
-// an ADVISORY leg of `convoy doctor`. It's COMPLEMENTARY, not a duplicate: convoy doctor checks the NETWORK side
-// (auth probe, hooks, bus, PTY_ROOT, TMPDIR); `/checkup` checks the CLAUDE-CODE side (install health, invalid
-// settings files, unused extensions, duplicate subagent names, Remote Control eligibility).
+// Harness checkups — surface each installed harness's own doctor (`claude doctor` / `codex doctor`) as an
+// ADVISORY leg of `convoy doctor`. Complementary, not a duplicate: convoy doctor checks the NETWORK side (auth
+// probe, hooks, bus, PTY_ROOT, TMPDIR); a harness doctor checks the HARNESS side (install health, invalid
+// settings, unused extensions, duplicate subagents, auth/runtime health).
 //
-// Advisory ONLY — it does NOT gate convoy doctor's pass/fail: `claude doctor` emits human-readable TEXT with no
-// JSON and no documented exit code, so there's nothing reliable to gate on. We run it read-only, print its text,
-// and recommend the in-session fix path. Version-gated: the enhanced checkup landed in claude 2.1.205, so on an
-// older (or absent) claude we skip cleanly with a note, never a failure.
+// Advisory ONLY — never gates convoy's pass/fail: these doctors emit human-readable TEXT with no JSON / no
+// documented exit code, so there's nothing reliable to gate on. We run each read-only (timeout-guarded), and —
+// because the raw output can be a verbose wall of text with a couple of buried warnings — pipe it through THAT
+// harness's OWN headless LLM (`claude -p` / `codex exec`, already signed in, no API keys) to DISTILL the
+// actionable issues. Distill only when the raw output has issues (a clean "no issues" passes through), with a
+// tight timeout and a FALL BACK to the raw text if the distill call fails/times out — never stall the preflight.
+// Version-gated per harness (claude's enhanced doctor landed in 2.1.205); older/absent → a clean note.
 
 import { execFile } from "node:child_process";
 import { childEnv, type ExecResult } from "../exec.ts";
+
+export type Harness = "claude" | "codex";
 
 export interface Version {
   major: number;
@@ -17,11 +22,11 @@ export interface Version {
   patch: number;
 }
 
-/** The enhanced `/checkup` (settings/dupe-subagent/RC checks) landed in Claude Code 2.1.205. */
-export const CHECKUP_MIN: Version = { major: 2, minor: 1, patch: 205 };
+/** The enhanced Claude Code doctor (settings/dupe-subagent/RC checks) landed in 2.1.205. */
+export const CLAUDE_DOCTOR_MIN: Version = { major: 2, minor: 1, patch: 205 };
 
-/** Parse a Version from `claude --version` output ("2.1.207 (Claude Code)"). Null if no x.y.z is found. */
-export function parseClaudeVersion(output: string): Version | null {
+/** Parse a Version from a `--version` line ("2.1.207 (Claude Code)", "codex-cli 0.142.5"). Null if none. */
+export function parseVersion(output: string): Version | null {
   const m = output.match(/(\d+)\.(\d+)\.(\d+)/);
   if (!m) return null;
   return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
@@ -34,22 +39,63 @@ export function versionGte(a: Version, b: Version): boolean {
   return a.patch >= b.patch;
 }
 
-export type CheckupState = "unavailable" | "too-old" | "ran";
-
-export interface CheckupResult {
-  state: CheckupState;
-  version?: string; // raw version string when claude is present
-  text?: string; // `claude doctor` output when it ran
-  note: string; // one-line advisory summary
-  recommend?: string; // the in-session fix recommendation (when it ran)
+/** Does a doctor's raw output look like it has ACTIONABLE issues (→ worth distilling)? A clean "no issues found"
+ *  passes through raw; warning/error glyphs (codex uses ⚠/✗) or explicit failure words mean distill. */
+export function hasActionableIssues(raw: string): boolean {
+  if (/no (installation )?issues? found/i.test(raw)) return false;
+  return /[⚠✗✘❌]/u.test(raw) || /\b(error|failed|invalid|missing|incomplete)\b/i.test(raw);
 }
 
-export type Runner = (cmd: string, args: string[]) => Promise<ExecResult>;
+interface HarnessSpec {
+  harness: Harness;
+  label: string;
+  bin: string;
+  minVersion: Version | null; // claude: 2.1.205; codex: capability-only
+  distillArgs: (prompt: string) => string[];
+  recommend: string;
+}
 
-/** Default runner: execFile with a timeout so a wedged `claude` can't stall the preflight. */
+const DISTILL_PROMPT = (bin: string, raw: string): string =>
+  `Summarize the output of \`${bin} doctor\` (a local install/config health check) as 1-3 short bullet points — ONLY real issues a user should fix, each with the fix if obvious. Ignore routine version-update notices. If nothing is actionable, reply with exactly: OK. Output follows:\n\n${raw}`;
+
+const SPECS: Record<Harness, HarnessSpec> = {
+  claude: {
+    harness: "claude",
+    label: "Claude Code",
+    bin: "claude",
+    minVersion: CLAUDE_DOCTOR_MIN,
+    distillArgs: (prompt) => ["-p", prompt, "--model", "claude-haiku-4-5-20251001", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'],
+    recommend: "For Claude Code config issues, run `/doctor` in a Claude Code session to review + apply fixes.",
+  },
+  codex: {
+    harness: "codex",
+    label: "Codex",
+    bin: "codex",
+    minVersion: null,
+    distillArgs: (prompt) => ["exec", "--skip-git-repo-check", prompt],
+    recommend: "For Codex config issues, `codex doctor` prints the details + fixes inline.",
+  },
+};
+
+export type CheckupState = "unavailable" | "too-old" | "no-doctor" | "ran";
+
+export interface CheckupResult {
+  harness: Harness;
+  label: string;
+  state: CheckupState;
+  version?: string;
+  raw?: string; // raw doctor output (shown when clean or when distill fell back)
+  distilled?: string; // LLM-distilled summary (when it ran)
+  note: string;
+  recommend?: string;
+}
+
+export type Runner = (cmd: string, args: string[], timeoutMs?: number) => Promise<ExecResult>;
+
+/** Default runner: execFile with a timeout so a wedged harness can't stall the preflight. */
 function timedRun(cmd: string, args: string[], timeoutMs = 15_000): Promise<ExecResult> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { env: childEnv(process.env), timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+    const child = execFile(cmd, args, { env: childEnv(process.env), timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
       const e = err as (Error & { code?: unknown }) | null;
       const status = e && typeof e.code === "number" ? e.code : e ? 1 : 0;
       resolve({
@@ -61,28 +107,51 @@ function timedRun(cmd: string, args: string[], timeoutMs = 15_000): Promise<Exec
         },
       });
     });
+    child.stdin?.end();
   });
 }
 
-/** Run the Claude Code checkup as a read-only ADVISORY. Version-gated (claude >= 2.1.205). Never throws / never a
- *  hard failure — returns a state + text the caller surfaces informationally. Runner injectable for tests. */
-export async function claudeCheckup(runner: Runner = timedRun): Promise<CheckupResult> {
-  const ver = await runner("claude", ["--version"]);
+/** Run ONE harness's checkup (advisory, read-only, version/capability-gated, with LLM-distill of any issues).
+ *  Never throws. Runner injectable for tests. */
+export async function harnessCheckup(harness: Harness, runner: Runner = timedRun): Promise<CheckupResult> {
+  const spec = SPECS[harness];
+  const base = { harness, label: spec.label };
+
+  const ver = await runner(spec.bin, ["--version"], 10_000);
   if (!ver.ok || !ver.stdout.trim()) {
-    return { state: "unavailable", note: "Claude Code (`claude`) not found — skipped (install Claude Code for the /checkup install/settings health check)" };
+    return { ...base, state: "unavailable", note: `${spec.label} (\`${spec.bin}\`) not installed — skipped` };
   }
-  const parsed = parseClaudeVersion(ver.stdout);
+  const parsed = parseVersion(ver.stdout);
   const v = parsed ? `${parsed.major}.${parsed.minor}.${parsed.patch}` : ver.stdout.trim();
-  if (!parsed || !versionGte(parsed, CHECKUP_MIN)) {
-    return { state: "too-old", version: v, note: `Claude Code ${v} — /checkup needs ≥ 2.1.205; upgrade Claude Code (\`claude update\`) for the install/settings health check` };
+  if (spec.minVersion && (!parsed || !versionGte(parsed, spec.minVersion))) {
+    const min = `${spec.minVersion.major}.${spec.minVersion.minor}.${spec.minVersion.patch}`;
+    return { ...base, state: "too-old", version: v, note: `${spec.label} ${v} — doctor needs ≥ ${min}; upgrade for the health check` };
   }
-  const doc = await runner("claude", ["doctor"]);
-  const text = (doc.stdout.trim() || doc.stderr.trim());
+
+  const doc = await runner(spec.bin, ["doctor"], 15_000);
+  const raw = (doc.stdout.trim() || doc.stderr.trim());
+  if (!raw) {
+    return { ...base, state: "no-doctor", version: v, note: `${spec.label} ${v} — \`${spec.bin} doctor\` produced no output (may be an older ${spec.bin})` };
+  }
+
+  // Distill only when there are actionable issues; a clean result is a concise one-liner (no LLM call, no dump).
+  if (!hasActionableIssues(raw)) {
+    return { ...base, state: "ran", version: v, note: `${spec.label} ${v} — \`${spec.bin} doctor\`: no issues found` };
+  }
+  const distill = await runner(spec.bin, spec.distillArgs(DISTILL_PROMPT(spec.bin, raw)), 25_000);
+  const summary = distill.ok ? distill.stdout.trim() : "";
   return {
+    harness,
+    label: spec.label,
     state: "ran",
     version: v,
-    text: text || "(claude doctor produced no output)",
-    note: `Claude Code ${v} — \`claude doctor\` (advisory; not gated):`,
-    recommend: "For Claude Code config issues, run `/doctor` (alias `/checkup`) in a session to review + apply fixes.",
+    ...(summary ? { distilled: summary } : { raw }), // distilled summary, or FALL BACK to raw text
+    note: summary ? `${spec.label} ${v} — \`${spec.bin} doctor\` (distilled; advisory, not gated):` : `${spec.label} ${v} — \`${spec.bin} doctor\` (advisory, not gated; distill unavailable — raw):`,
+    recommend: spec.recommend,
   };
+}
+
+/** Run the installed harnesses' checkups in PARALLEL (latency = the slowest single harness, not the sum). */
+export async function harnessCheckups(runner: Runner = timedRun): Promise<CheckupResult[]> {
+  return Promise.all((["claude", "codex"] as Harness[]).map((h) => harnessCheckup(h, runner)));
 }
