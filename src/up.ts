@@ -184,7 +184,7 @@ export async function up(opts: UpOptions): Promise<number> {
         workerDinged.add(s.name); // mark regardless — a clean-exit worker must not be re-checked either
         if (!workerCrashed(s.status, s.exitCode)) continue; // routine clean exit (code 0) → silent
         const id = busIdOf(s) ?? logicalId(s);
-        const reason = s.status === "vanished" ? "vanished (hard death — no exit record)" : `exit ${s.exitCode}`;
+        const reason = s.status === "vanished" ? "vanished (hard death — no exit record)" : s.exitCode === null ? "killed with no exit code (hard kill / OOM)" : `exit ${s.exitCode}`;
         const targets = dingTargets(sessions, busIdOf(s));
         const body = `Worker ${id} CRASHED (${reason}) on network ${root} — it is NOT auto-respawned (workers are ephemeral). NEEDS ATTENTION: its supervisor should decide whether to re-spawn or redirect it. Inspect: pty peek ${s.name}.`;
         for (const t of targets) await sendDing(root, t, `worker crash: ${id}`, body);
