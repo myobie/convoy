@@ -33,13 +33,19 @@ const HARNESS_NAME: Record<Harness, string> = { claude: "Claude", codex: "Codex"
 const RELOGIN: Record<Harness, string> = { claude: "run `claude` then `/login`", codex: "run `codex login`" };
 
 /** PURE classifier: map a probe signal to a preflight outcome. This is the unit-tested core — it needs no real
- *  auth, so a test can inject any signal and assert the outcome (live → pass, signed-out → fail + actionable). */
-export function classifyAuthSignal(harness: Harness, signal: AuthSignal): AuthOutcome {
+ *  auth, so a test can inject any signal and assert the outcome (live → pass, signed-out → fail + actionable).
+ *  `required` = does THIS setup actually use the harness (the network's harnesses, or claude when fresh)? A
+ *  readiness check must not FALSE-FAIL: an INSTALLED-but-unused harness that's signed-out is a WARN (ok:null),
+ *  not a hard failure — so a claude-only setup that merely has codex installed still passes --quick green. */
+export function classifyAuthSignal(harness: Harness, signal: AuthSignal, required = true): AuthOutcome {
   const name = HARNESS_NAME[harness];
   switch (signal) {
     case "live":
       return { harness, ok: true, detail: `${name} is signed in — verified with a live probe (not just a cred on disk)` };
     case "signed-out":
+      if (!required) {
+        return { harness, ok: null, detail: `${name} is installed but not signed in — not used by this setup, so it's fine; ${RELOGIN[harness]} if you plan to run ${name} agents` };
+      }
       return {
         harness,
         ok: false,
@@ -49,6 +55,9 @@ export function classifyAuthSignal(harness: Harness, signal: AuthSignal): AuthOu
     case "unavailable":
       return { harness, ok: null, detail: `${name} not installed — skipped (capability-detected)` };
     case "inconclusive":
+      if (!required) {
+        return { harness, ok: null, detail: `${name} is installed but its auth couldn't be verified (probe errored) — not used by this setup, so it's not blocking` };
+      }
       return {
         harness,
         ok: false,
@@ -112,9 +121,15 @@ function onPath(harness: Harness): Promise<boolean> {
 /** Capability-detect the installed harnesses and probe each — IN PARALLEL so total latency is the slowest single
  *  probe, not the sum. A harness that isn't installed is skipped (ok:null), never a failure. Returns one outcome
  *  per harness (installed or not). Both `prober` + `detector` are injectable for tests. */
-export async function authReadiness(prober: Prober = probeHarness, detector: Detector = onPath): Promise<AuthOutcome[]> {
+export async function authReadiness(
+  prober: Prober = probeHarness,
+  detector: Detector = onPath,
+  isRequired: (h: Harness) => boolean = () => true,
+): Promise<AuthOutcome[]> {
   const harnesses: Harness[] = ["claude", "codex"];
   return Promise.all(
-    harnesses.map(async (h) => ((await detector(h)) ? classifyAuthSignal(h, await prober(h)) : classifyAuthSignal(h, "unavailable"))),
+    harnesses.map(async (h) =>
+      (await detector(h)) ? classifyAuthSignal(h, await prober(h), isRequired(h)) : classifyAuthSignal(h, "unavailable", isRequired(h)),
+    ),
   );
 }

@@ -21,10 +21,15 @@ export function enrichedPath(): string {
   if (_enriched !== null) return _enriched;
   const dirs: string[] = [];
   try {
-    const login = execFileSync("/bin/zsh", ["-lc", 'printf %s "$PATH"'], { encoding: "utf8" });
+    // The user's login shell resolves nvm/user PATH entries a minimal spawn env misses. Use $SHELL (Linux
+    // defaults to bash, not zsh — hardcoding /bin/zsh silently skipped this on Linux), falling back to /bin/sh;
+    // `-lc` + printf work for sh/bash/zsh (fish/others fail → caught → the common-dir fallback still applies). A
+    // short timeout so a slow/hanging login shell can't wedge convoy.
+    const shell = process.env["SHELL"] || "/bin/sh";
+    const login = execFileSync(shell, ["-lc", 'printf %s "$PATH"'], { encoding: "utf8", timeout: 2000 });
     dirs.push(...login.split(":"));
   } catch {
-    // no login shell — fall through to current PATH + common dirs
+    // no usable login shell — fall through to current PATH + common dirs
   }
   if (process.env["PATH"]) dirs.push(...process.env["PATH"].split(":"));
   const home = process.env["HOME"] ?? homedir();

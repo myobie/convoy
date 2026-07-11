@@ -74,3 +74,26 @@ describe("authReadiness (capability-detect + probe, injected)", () => {
     expect(outcomes.find((o) => o.harness === "claude")!.ok).toBe(false);
   });
 });
+
+describe("required narrowing — don't red-fail a valid setup (installed-but-unused = WARN)", () => {
+  it("classify: an UNUSED harness that's signed-out is a WARN (ok:null), not a hard FAIL", () => {
+    expect(classifyAuthSignal("codex", "signed-out", false).ok).toBeNull();
+    expect(classifyAuthSignal("codex", "signed-out", false).detail).toMatch(/installed but not signed in|not used/i);
+    expect(classifyAuthSignal("codex", "signed-out", false).fix).toBeUndefined(); // a WARN carries no blocking fix
+  });
+  it("classify: a USED (required) harness that's signed-out still HARD-fails", () => {
+    expect(classifyAuthSignal("claude", "signed-out", true).ok).toBe(false);
+    expect(classifyAuthSignal("claude", "signed-out").ok).toBe(false); // required defaults to true
+  });
+  it("classify: an unused harness whose probe is inconclusive is also a WARN, not a fail", () => {
+    expect(classifyAuthSignal("codex", "inconclusive", false).ok).toBeNull();
+  });
+  it("authReadiness: claude-only setup with codex installed-and-signed-out PASSES (codex → WARN)", async () => {
+    const detectAll: (h: Harness) => Promise<boolean> = async () => true;
+    const outcomes = await authReadiness(async () => "signed-out", detectAll, (h) => h === "claude"); // only claude required
+    const claude = outcomes.find((o) => o.harness === "claude")!;
+    const codex = outcomes.find((o) => o.harness === "codex")!;
+    expect(claude.ok).toBe(false); // claude required + signed-out → hard fail
+    expect(codex.ok).toBeNull(); // codex installed-but-unused + signed-out → WARN, not a fail
+  });
+});
