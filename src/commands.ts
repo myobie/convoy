@@ -668,6 +668,9 @@ export async function cmdPretrust(args: string[]): Promise<number> {
   return 0;
 }
 
+// NOT READY / HIDDEN: the Convoy.app menubar host manager. Kept dispatchable but hidden from `convoy
+// --help` + the README Commands list until the macOS app is dailyable (Nathan's call). Bring it back onto
+// the user-facing surfaces once the app ships for daily use.
 export async function cmdApp(args: string[]): Promise<number> {
   const sub = args[0] ?? "status";
   if (sub === "status") {

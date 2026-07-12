@@ -69,7 +69,7 @@ export async function main(argv: string[]): Promise<void> {
     case "up": code = await cmdUp(rest); break;
     case "down": code = await cmdDown(rest); break;
     case "personas": code = await cmdPersonas(rest); break;
-    case "app": code = await cmdApp(rest); break;
+    case "app": code = await cmdApp(rest); break; // hidden from --help until the macOS app is dailyable (see cmdApp)
     case "-h":
     case "--help":
       printHelp();
@@ -114,6 +114,9 @@ async function cmdDown(args: string[]): Promise<number> {
   return down(opts);
 }
 
+// NOTE: `app <status>` (the Convoy.app menubar host manager) is intentionally hidden from this help
+// output + the README Commands list until the macOS app is dailyable (Nathan's call). The subcommand
+// still dispatches (see the "app" case + cmdApp); un-hide by re-adding its line here + in the README.
 function printHelp(): void {
   process.stdout.write(
     "convoy — stand up and run your crew of agents (TypeScript).\n\n" +
@@ -129,7 +132,6 @@ function printHelp(): void {
       "  reload <id>    re-materialize an agent from its pty.toml (kill + respawn, cold-boot) [--dry-run]\n" +
       "  pretrust <dir>... batch pre-trust agent dirs before spawning many back-to-back (avoids the trust race) [--config-dir]\n" +
       "  install-cli    symlink convoy + st + pty onto PATH (default ~/.local/bin) — reliable, no npm link [--bin <dir>]\n" +
-      "  personas <status|install>\n" +
-      "  app <status>\n",
+      "  personas <status|install>\n",
   );
 }
