@@ -246,7 +246,8 @@ const DING_BUS_MD = `# Ding-mode bus instructions
 
 You are connected to smalltalk via ding-mode (no MCP). Bus ops go through the \`st\` CLI. **You will
 NOT receive \`<channel>\` blocks — those are MCP-only.** Inbound messages arrive as \`[DING]\` pokes in
-your terminal; always confirm the actual message via \`st message ls\` + \`st message read\` before acting.
+your terminal; confirm the actual message via \`st message ls\` + \`st message read\` before acting on a new
+one (each poke carries a stable \`[id:<rand6>]\` so you can dedup re-pokes at a glance — see below).
 
 ## Boot ritual (on cold start or /clear)
 
@@ -271,8 +272,11 @@ handle this?" first — only act on genuinely new ones.
 
 ## Inbound message handling ([DING] pokes)
 
-New peer messages surface as \`[DING] new smalltalk message: <subject> (from <sender>)\` lines. For each:
-\`st message ls\` to find the filename, \`st message read <filename>\`, \`st message reply <filename> -m
+New peer messages surface as \`[DING] new smalltalk message: [id:<rand6>] <subject> (from <sender>); check
+your inbox\` lines. The \`[id:<rand6>]\` is the message filename's rand6 suffix — it is STABLE across re-pokes
+of the SAME message, so you can dedup a re-poke AT A GLANCE: if the id matches one you have already
+handled, it is a duplicate poke — skip it, no \`st message ls\` needed. For a NEW id: \`st message ls\` to
+find the filename (it contains that rand6), \`st message read <filename>\`, \`st message reply <filename> -m
 "<reply>"\` if warranted (recipient + threading are derived from the message), \`st message archive
 <filename>\` to clear.
 
