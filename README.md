@@ -28,7 +28,7 @@ Where the pieces sit:
  convoy ≈ Nomad   ·   smalltalk ≈ Consul   ·   pty ≈ pty
 ```
 
-The metaphor: your agents travel together like a convoy, and each can carry **sidecars** — a *ding* sidecar (delivers messages to an agent running with no MCP) and a *sync* sidecar (rsyncs the bus to peer machines on write). smalltalk carries the talk; pty runs the terminals; convoy is the whole thing rolling down the road, sidecars and all.
+The metaphor: your agents travel together like a convoy, and each can carry **sidecars** — a *ding* sidecar (delivers messages to an agent running with no MCP) and a *sync* sidecar (rsyncs the bus between peer machines). smalltalk carries the talk; pty runs the terminals; convoy is the whole thing rolling down the road, sidecars and all.
 
 The philosophy behind all of it is in the [manifesto](MANIFESTO.md).
 
