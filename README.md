@@ -5,7 +5,7 @@ The orchestrator for a [smalltalk](https://github.com/compoundingtech/smalltalk)
 Where the pieces sit:
 - **smalltalk** — the message bus (send / read / archive / status / agents / context).
 - **pty** — the session manager (runs each agent in a terminal).
-- **convoy** — ties them together: launches agents, wires their transport (MCP or ding), installs their persona, keeps the network in sync across machines.
+- **convoy** — ties them together: launches agents, wires their transport, installs their persona, keeps the network in sync across machines.
 
 The metaphor: your agents travel together like a convoy, and each can carry **sidecars** — a *ding* sidecar (delivers messages to an agent running with no MCP) and a *sync* sidecar (rsyncs the bus to peer machines on write). smalltalk carries the talk; pty runs the terminals; convoy is the whole thing rolling down the road, sidecars and all.
 
@@ -13,7 +13,7 @@ The philosophy behind all of it is in the [manifesto](MANIFESTO.md).
 
 ## Status
 
-Early but real. The CLI is a **TypeScript package** (Node ≥23.6, which strips the types at load — no build step) that **orchestrates** the existing tools (it drives `st` and `pty`; it reimplements neither). `ls`, `doctor`, `init`, `add`, `remove`, `cos`, `up`, `down`, and `reload` work against the live bus today. The macOS menubar app (`Convoy.app`) lives in a separate `convoy-macos` repo. See [BUILD.md](BUILD.md).
+Early but real. The CLI is a **TypeScript package** (Node ≥23.6, which strips the types at load — no build step) that **orchestrates** the existing tools (it drives `st` and `pty`; it reimplements neither). `ls`, `doctor`, `init`, `add`, `remove`, `cos`, `up`, `down`, and `reload` work against the live bus today.
 
 The guiding requirement: **it must be impossible to misconfigure an agent.** `convoy add` takes high-level intent and derives all wiring correct-by-construction, validated before launch — see [notes/ACCEPTANCE.md](notes/ACCEPTANCE.md).
 
