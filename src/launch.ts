@@ -307,7 +307,9 @@ handle this?" first — only act on genuinely new ones.
 New peer messages surface as \`[DING] new smalltalk message: [id:<rand6>] <subject> (from <sender>); check
 your inbox\` lines. The \`[id:<rand6>]\` is the message filename's rand6 suffix — it is STABLE across re-pokes
 of the SAME message, so you can dedup a re-poke AT A GLANCE: if the id matches one you have already
-handled, it is a duplicate poke — skip it, no \`st message ls\` needed. For a NEW id: \`st message ls\` to
+handled, it is a duplicate poke — skip it, no \`st message ls\` needed. Dedup on the \`[id:<rand6>]\`, NEVER
+the subject line: the subject text is display-only and can show stale pixels from a pane-render overlap, so
+a subject-based dedup could skip a real message wearing phantom pixels. For a NEW id: \`st message ls\` to
 find the filename (it contains that rand6), \`st message read <filename>\`, \`st message reply <filename> -m
 "<reply>"\` if warranted (recipient + threading are derived from the message), \`st message archive
 <filename>\` to clear.
