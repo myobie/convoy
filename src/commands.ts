@@ -9,7 +9,7 @@ import { run } from "./exec.ts";
 import { defaultBinDir, installClis } from "./install-cli.ts";
 import { Bus, isLive } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, type SupervisedSession } from "./host.ts";
-import { discoverSmalltalkDir, nativeLaunch } from "./launch.ts";
+import { discoverSmalltalkDir, nativeLaunch, regenerateDingRoot } from "./launch.ts";
 import { authReadiness } from "./doctor/auth.ts";
 import { harnessCheckups } from "./doctor/checkup.ts";
 import { gitUsableCheck, nodeVersionCheck, osCheck, tmpdirSocketCheck } from "./doctor/env.ts";
@@ -589,7 +589,7 @@ export async function cmdReload(args: string[]): Promise<number> {
   const network = optValue(args, "--network");
   const identity = positionals(args)[0];
   if (!identity) {
-    err("missing identity. Usage: convoy reload <id> [--dry-run]");
+    err("missing identity. Usage: convoy reload <id> [--dry-run] [--write-only]");
     return 2;
   }
   // Match the agent's sessions (claude + ding) robustly by their repo dir — each agent's session
@@ -612,11 +612,28 @@ export async function cmdReload(args: string[]): Promise<number> {
     return 1;
   }
   const dir = dirname(ptyfile);
+  const writeOnly = hasFlag(args, "--write-only");
+  // Heal the ding block to carry --root (idempotent) BEFORE re-materializing, so the fresh spawn — and
+  // every future cold-up — gets a durable ding, not an env-only one that a pty restart would strip.
+  // The harness [sessions.claude] block (role prompt + --resume) is left verbatim. See regenerateDingRoot.
+  const heal = regenerateDingRoot(dir, { dryRun: true });
   out(`convoy reload — plan for ${identity} (from ${ptyfile}):`);
-  for (const s of sessions) out(`  stop ${s.name}`);
-  out("  respawn fresh from pty.toml (re-reads it — permission-mode / displayName / ding-ref / --resume edits take effect)");
+  if (heal) out(`  heal ding command: ${heal.before}  ->  ${heal.after}`);
+  else out("  ding command already durable (--root present) — no pty.toml change");
+  if (writeOnly) {
+    out("  --write-only: heal the pty.toml only; running sessions left untouched");
+  } else {
+    for (const s of sessions) out(`  stop ${s.name}`);
+    out("  respawn fresh from pty.toml (re-reads it — permission-mode / displayName / ding-ref / --resume edits take effect)");
+  }
   if (hasFlag(args, "--dry-run")) {
     out("\n✓ Dry run only. Re-run without --dry-run to execute.");
+    return 0;
+  }
+  const healed = regenerateDingRoot(dir);
+  if (healed) out(`✓ healed pty.toml ding command (--root baked in)`);
+  if (writeOnly) {
+    out(`✓ ${identity}: pty.toml ${healed ? "healed" : "already durable"} — running sessions untouched.`);
     return 0;
   }
   for (const s of sessions) await host.kill(s.name);

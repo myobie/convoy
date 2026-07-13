@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stringify as tomlStringify } from "smol-toml";
+import { parse as tomlParse, stringify as tomlStringify } from "smol-toml";
 import { spawnFromPtyFile } from "./host.ts";
 import { ensureInstalled } from "./personas.ts";
 import { resolvedPersonaPath, sessionId, specPermanent, specPermissionMode, type AgentSpec, type Harness } from "./agent-spec.ts";
@@ -157,6 +157,35 @@ export function writePtyToml(dir: string, spec: AgentSpec): void {
     },
   };
   writeFileSync(join(dir, "pty.toml"), tomlStringify(doc));
+}
+
+/** Heal a PRE-#43 pty.toml so its ding survives a `pty restart` (which preserves the command but drops
+ *  the env — the actual ST_ROOT durability engine). Rewrites ONLY the `[sessions.ding]` command to carry
+ *  `--root <net>` (via `dingCommand`), leaving the `[sessions.claude]` harness block — the role boot
+ *  prompt + `--resume` uuid, which are NOT structurally recoverable — VERBATIM. Idempotent (a no-op once
+ *  `--root` is present) and surgical (a literal replace of the ding command string; the rest of the file
+ *  is byte-for-byte untouched). Returns the before/after ding command, or null if nothing changed / there
+ *  is no ding / no root is known. `dryRun` computes the diff without writing. This is convoy#43's
+ *  cold-start counterpart: #43 fixed writePtyToml for NEW agents; this heals the existing FILES so a
+ *  `convoy reload` / cold `convoy up` re-materializes a durable ding instead of an env-only one. */
+export function regenerateDingRoot(dir: string, opts?: { dryRun?: boolean }): { before: string; after: string } | null {
+  const path = join(dir, "pty.toml");
+  const text = readFileSync(path, "utf8");
+  const doc = tomlParse(text) as { sessions?: { ding?: { command?: unknown; env?: Record<string, string>; tags?: Record<string, string> } } };
+  const ding = doc.sessions?.ding;
+  if (!ding || typeof ding.command !== "string") return null;
+  const before = ding.command;
+  const m = before.match(/st ding (\S+) --identity (\S+)/); // target + bus id, robust to a leading inline env or trailing --root
+  if (!m) return null;
+  const [, target, busId] = m;
+  const net = ding.env?.["ST_ROOT"] ?? ding.tags?.["st.network"];
+  if (!target || !busId || !net) return null; // incomplete — don't emit a bare/guessed --root
+  const after = dingCommand(busId, target, net);
+  if (after === before) return null; // already durable (has --root) — idempotent
+  const updated = text.replace(`command = "${before}"`, `command = "${after}"`);
+  if (updated === text) return null; // literal command not found verbatim — refuse to half-write
+  if (!opts?.dryRun) writeFileSync(path, updated);
+  return { before, after };
 }
 
 /** The Claude Code hooks (SessionStart boot-ritual, PreCompact flush, StopFailure ding) — reference

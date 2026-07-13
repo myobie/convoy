@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bootPrompt, dingCommand, discoverSmalltalkDir, harnessCommand, writePtyToml } from "./launch.ts";
+import { bootPrompt, dingCommand, discoverSmalltalkDir, harnessCommand, regenerateDingRoot, writePtyToml } from "./launch.ts";
 import type { AgentSpec } from "./agent-spec.ts";
 
 describe("native launch command builders (cold-start boot-prompt)", () => {
@@ -174,6 +174,92 @@ describe("discoverSmalltalkDir (fresh-install hook discovery, no SMALLTALK_DIR n
       expect(found).not.toBe(empty);
     } finally {
       rmSync(empty, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("regenerateDingRoot (heal pre-#43 pty.tomls for cold-start durability)", () => {
+  // A PRE-#43 pty.toml: ding command has NO --root, root lives only in [sessions.ding.env].
+  const preToml = `prefix = "silber.evals"
+
+[sessions.claude]
+id = "silber.evals"
+command = "exec claude --permission-mode bypassPermissions --resume ABC-123-RESUME"
+
+[sessions.claude.tags]
+role = "agent"
+strategy = "permanent"
+"st.network" = "/net/convoy"
+
+[sessions.claude.env]
+ST_AGENT = "evals-claude"
+ST_ROOT = "/net/convoy"
+PTY_ROOT = "/net/convoy/pty"
+
+[sessions.ding]
+id = "silber.evals.ding"
+command = "st ding silber.evals --identity evals-claude"
+
+[sessions.ding.tags]
+role = "ding"
+strategy = "permanent"
+"st.network" = "/net/convoy"
+
+[sessions.ding.env]
+ST_AGENT = "evals-claude"
+ST_ROOT = "/net/convoy"
+PTY_ROOT = "/net/convoy/pty"
+`;
+
+  it("bakes --root into the ding command and leaves the harness (role prompt + --resume) VERBATIM", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-regen-"));
+    try {
+      writeFileSync(join(dir, "pty.toml"), preToml);
+      const r = regenerateDingRoot(dir);
+      expect(r).not.toBeNull();
+      expect(r?.before).toBe("st ding silber.evals --identity evals-claude");
+      expect(r?.after).toBe("st ding silber.evals --identity evals-claude --root /net/convoy");
+      const out = readFileSync(join(dir, "pty.toml"), "utf8");
+      expect(out).toContain('command = "st ding silber.evals --identity evals-claude --root /net/convoy"');
+      // harness block untouched — --resume + boot prompt survive byte-for-byte
+      expect(out).toContain('command = "exec claude --permission-mode bypassPermissions --resume ABC-123-RESUME"');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is idempotent — a second run on the healed file is a no-op (returns null)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-regen-idem-"));
+    try {
+      writeFileSync(join(dir, "pty.toml"), preToml);
+      expect(regenerateDingRoot(dir)).not.toBeNull(); // first heal
+      const healed = readFileSync(join(dir, "pty.toml"), "utf8");
+      expect(regenerateDingRoot(dir)).toBeNull(); // already has --root
+      expect(readFileSync(join(dir, "pty.toml"), "utf8")).toBe(healed); // unchanged
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dryRun computes the before/after WITHOUT writing the file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-regen-dry-"));
+    try {
+      writeFileSync(join(dir, "pty.toml"), preToml);
+      const r = regenerateDingRoot(dir, { dryRun: true });
+      expect(r?.after).toContain("--root /net/convoy");
+      expect(readFileSync(join(dir, "pty.toml"), "utf8")).toBe(preToml); // NOT written
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when there is no ding session to heal", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-regen-noding-"));
+    try {
+      writeFileSync(join(dir, "pty.toml"), '[sessions.claude]\nid = "x"\ncommand = "exec claude"\n');
+      expect(regenerateDingRoot(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

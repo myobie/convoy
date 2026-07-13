@@ -129,7 +129,7 @@ function printHelp(): void {
       "  up <network>   host a network in the foreground (TCC anchor + supervisor + flapping-cap)\n" +
       "  down [network] tear down the network — the ONLY path that kills sessions [--dry-run --force --json]\n" +
       "  remove <id>    remove an agent\n" +
-      "  reload <id>    re-materialize an agent from its pty.toml (kill + respawn, cold-boot) [--dry-run]\n" +
+      "  reload <id>    re-materialize an agent from its pty.toml, healing the ding to carry --root (kill + respawn) [--dry-run --write-only]\n" +
       "  pretrust <dir>... batch pre-trust agent dirs before spawning many back-to-back (avoids the trust race) [--config-dir]\n" +
       "  install-cli    symlink convoy + st + pty onto PATH (default ~/.local/bin) — reliable, no npm link [--bin <dir>]\n" +
       "  personas <status|install>\n",
