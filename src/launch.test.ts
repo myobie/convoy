@@ -35,6 +35,14 @@ describe("native launch command builders (cold-start boot-prompt)", () => {
   it("dingCommand: st ding <claude-session-id> --identity <bus-id>", () => {
     expect(dingCommand("convoy-claude", "silber.convoy")).toBe("st ding silber.convoy --identity convoy-claude");
   });
+
+  it("dingCommand: bakes --root <net> into the command line when a network root is given (restart-proof)", () => {
+    expect(dingCommand("convoy-claude", "silber.convoy", "/Users/x/.local/state/convoy")).toBe(
+      "st ding silber.convoy --identity convoy-claude --root /Users/x/.local/state/convoy",
+    );
+    // no root → no flag (unchanged behavior; falls back to ST_ROOT env / install default)
+    expect(dingCommand("convoy-claude", "silber.convoy", null)).toBe("st ding silber.convoy --identity convoy-claude");
+  });
 });
 
 describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
@@ -64,6 +72,22 @@ describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
       expect(toml).toContain("st ding silber.convoy --identity convoy-claude");
       expect(toml).not.toContain("pty send"); // poker gone
       expect(toml).not.toContain("--resume"); // cold start
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("networkRoot bakes --root <net> into the ding command line only (not the harness session)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-ptytoml-root-"));
+    try {
+      writePtyToml(dir, spec({ networkRoot: "/net/convoy" }));
+      const toml = readFileSync(join(dir, "pty.toml"), "utf8");
+      // ding command carries --root so a pty-restart can't drop the root
+      expect(toml).toContain("st ding silber.convoy --identity convoy-claude --root /net/convoy");
+      // --root is a ding-only concern; the harness (claude) command must not get it
+      expect(toml).not.toContain("exec claude --permission-mode bypassPermissions --root");
+      // env still carries ST_ROOT too (belt-and-suspenders)
+      expect(toml).toContain('ST_ROOT = "/net/convoy"');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

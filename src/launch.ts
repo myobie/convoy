@@ -109,9 +109,12 @@ export function harnessCommand(harness: Harness, permissionMode: string, prompt:
 
 /** The ding sidecar command — pokes the agent's claude session when its bus inbox gets mail. Points at
  *  the stable session id (`st ding <prefix.agentShort> --identity <bus-id>`). `st ding` stays a
- *  smalltalk runtime binary. */
-export function dingCommand(busId: string, claudeSessionId: string): string {
-  return `st ding ${claudeSessionId} --identity ${busId}`;
+ *  smalltalk runtime binary. When a network `root` is given we bake `--root <net>` (smalltalk #85) into
+ *  the command line — NOT just the env — so a `pty restart` (which replays the stored command) can never
+ *  drop it and silently fall back to st's install-default root (the fleet phantom-poke/non-delivery bug). */
+export function dingCommand(busId: string, claudeSessionId: string, root?: string | null): string {
+  const rootFlag = root ? ` --root ${root}` : "";
+  return `st ding ${claudeSessionId} --identity ${busId}${rootFlag}`;
 }
 
 /** Serialize the per-agent pty.toml (pty's manifest format — NOT a convoy.toml). Pins the session ids
@@ -145,7 +148,7 @@ export function writePtyToml(dir: string, spec: AgentSpec): void {
         ? {
             ding: {
               id: dingId,
-              command: dingCommand(busId, harnessId),
+              command: dingCommand(busId, harnessId, root),
               tags: { role: "ding", ...(permanent ? { strategy: "permanent" } : {}), ...stTag },
               env,
             },
