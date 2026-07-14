@@ -4,10 +4,10 @@
 // Built on the NATIVE host (src/host.ts, @myobie/pty/client) + the §5 classifier (src/flapping-cap.ts).
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { run } from "./exec.ts";
 import { pretrustDirs, pretrustDirsCodex } from "./trust.ts";
+import { defaultConvoyNetwork } from "./paths.ts";
 import {
   classify,
   effectiveLimit,
@@ -106,10 +106,10 @@ async function sendDing(root: string, to: string, subject: string, body: string)
   }
 }
 
+/** up/down's network fallback: ambient ST_ROOT, else convoy's OWN default network (not st/pty's global
+ *  ~/.local/state/smalltalk root — the ST_ROOT-unset footgun). An explicit `up <network>` still wins. */
 function defaultRoot(): string {
-  const env = process.env;
-  if (env["ST_ROOT"]) return env["ST_ROOT"];
-  return `${env["HOME"] ?? homedir()}/.local/state/smalltalk`;
+  return process.env["ST_ROOT"] ?? defaultConvoyNetwork();
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
