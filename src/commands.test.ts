@@ -1,8 +1,9 @@
 import { afterEach, describe, it, expect } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkPtyRoot, networkEnvExports, optValue, pathTooLongMessage, positionals, PTY_ROOT_MAX_BYTES, resolveNetworkEnv, resolveNetworkRoot, shellQuote, unknownFlag } from "./commands.ts";
+import { defaultConvoyNetwork } from "./paths.ts";
 
 describe("arg parsing: --flag=value form (silent-default trap)", () => {
   it("optValue reads both `--name value` and `--name=value`", () => {
@@ -51,9 +52,31 @@ describe("resolveNetworkRoot (no-leak: pty scope follows the bus scope)", () => 
     process.env["ST_ROOT"] = "/isolated";
     expect(resolveNetworkRoot(null)).toBe("/isolated");
   });
-  it("is null when neither --network nor ST_ROOT is set (ambient default)", () => {
+  it("falls back to the convoy DEFAULT when neither --network nor ST_ROOT is set (its own default, not st's global root)", () => {
     delete process.env["ST_ROOT"];
-    expect(resolveNetworkRoot(null)).toBeNull();
+    expect(resolveNetworkRoot(null)).toBe(defaultConvoyNetwork());
+  });
+});
+
+describe("defaultConvoyNetwork (convoy's own default network location)", () => {
+  const savedXdg = process.env["XDG_STATE_HOME"];
+  afterEach(() => {
+    if (savedXdg === undefined) delete process.env["XDG_STATE_HOME"];
+    else process.env["XDG_STATE_HOME"] = savedXdg;
+  });
+
+  it("respects XDG_STATE_HOME → <XDG_STATE_HOME>/convoy", () => {
+    process.env["XDG_STATE_HOME"] = "/xdg/state";
+    expect(defaultConvoyNetwork()).toBe("/xdg/state/convoy");
+  });
+  it("falls back to ~/.local/state/convoy when XDG_STATE_HOME is unset", () => {
+    delete process.env["XDG_STATE_HOME"];
+    expect(defaultConvoyNetwork()).toBe(join(homedir(), ".local", "state", "convoy"));
+  });
+  it("is FLAT — the default IS <state>/convoy, never a /convoy/default subdir (named nets = separate thread)", () => {
+    process.env["XDG_STATE_HOME"] = "/x";
+    expect(defaultConvoyNetwork()).toBe("/x/convoy");
+    expect(defaultConvoyNetwork().endsWith("/convoy/default")).toBe(false);
   });
 });
 
@@ -133,13 +156,37 @@ describe("convoy env / shell — network env exports (footgun-proof targeting)",
     expect("error" in resolveNetworkEnv(["/no/such/network/xyz"])).toBe(true);
   });
 
-  it("resolveNetworkEnv errors when no network arg AND ST_ROOT is unset (the footgun case)", () => {
-    const saved = process.env["ST_ROOT"];
+  it("resolveNetworkEnv resolves the convoy DEFAULT when no arg + no ST_ROOT (footgun closed — not the global root, no longer a hard error)", () => {
+    const savedXdg = process.env["XDG_STATE_HOME"];
+    const savedRoot = process.env["ST_ROOT"];
+    const base = mkdtempSync(join(tmpdir(), "convoy-xdg-"));
+    const net = join(base, "convoy");
+    mkdirSync(net, { recursive: true }); // the default network exists (as it does on a real machine)
+    process.env["XDG_STATE_HOME"] = base;
+    delete process.env["ST_ROOT"];
+    try {
+      const r = resolveNetworkEnv([]);
+      expect("root" in r).toBe(true);
+      if ("root" in r) expect(r.root).toBe(net); // <XDG_STATE_HOME>/convoy, NOT ~/.local/state/smalltalk
+    } finally {
+      if (savedXdg === undefined) delete process.env["XDG_STATE_HOME"];
+      else process.env["XDG_STATE_HOME"] = savedXdg;
+      if (savedRoot !== undefined) process.env["ST_ROOT"] = savedRoot;
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveNetworkEnv errors when the resolved default doesn't exist yet (fresh machine, pre-init)", () => {
+    const savedXdg = process.env["XDG_STATE_HOME"];
+    const savedRoot = process.env["ST_ROOT"];
+    process.env["XDG_STATE_HOME"] = "/no/such/xdg/state/xyz"; // <that>/convoy will not exist
     delete process.env["ST_ROOT"];
     try {
       expect("error" in resolveNetworkEnv([])).toBe(true);
     } finally {
-      if (saved !== undefined) process.env["ST_ROOT"] = saved;
+      if (savedXdg === undefined) delete process.env["XDG_STATE_HOME"];
+      else process.env["XDG_STATE_HOME"] = savedXdg;
+      if (savedRoot !== undefined) process.env["ST_ROOT"] = savedRoot;
     }
   });
 });

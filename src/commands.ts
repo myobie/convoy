@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "./exec.ts";
+import { defaultConvoyNetwork } from "./paths.ts";
 import { defaultBinDir, installClis } from "./install-cli.ts";
 import { Bus, isLive } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, type SupervisedSession } from "./host.ts";
@@ -72,12 +73,14 @@ export function unknownFlag(args: string[], bool: string[], value: string[]): st
   return null;
 }
 
-/** The effective network root: `--network` if given, else the ambient `ST_ROOT`. Falling back to
- *  ST_ROOT keeps the pty sessions (agent + ding sidecar) in the SAME root as the bus. Without it, a bare
- *  `convoy add` under an isolated ST_ROOT registers the agent on the isolated bus but leaks its pty
- *  sessions to the global pty root — inconsistent isolation that `convoy down` can't then reap. */
-export function resolveNetworkRoot(cliNetwork: string | null): string | null {
-  return cliNetwork ?? process.env["ST_ROOT"] ?? null;
+/** The effective network root, in priority order: an explicit `--network`/network arg, else ambient
+ *  `ST_ROOT`, else convoy's OWN default network (`defaultConvoyNetwork()` = `<state>/convoy`). Falling back
+ *  to ST_ROOT keeps the pty sessions (agent + ding sidecar) in the SAME root as the bus; falling back to
+ *  the convoy default (last resort) means a bare `convoy <cmd>` targets convoy's network instead of st/pty's
+ *  global `~/.local/state/smalltalk` root (the ST_ROOT-unset footgun behind the 15-dings-on-the-wrong-root
+ *  incident). Explicit arg / --network / ST_ROOT always win — the default is only the fallback. Never null. */
+export function resolveNetworkRoot(cliNetwork: string | null): string {
+  return cliNetwork ?? process.env["ST_ROOT"] ?? defaultConvoyNetwork();
 }
 
 function out(s = ""): void {
@@ -146,10 +149,9 @@ export function networkEnvExports(root: string, ptyRoot: string, identity: strin
  *  `{ root, ptyRoot }` derived from the real network layout (never hardcoded) — or an `{ error }`.
  *  Shared by `convoy env` (print exports) and `convoy shell` (spawn a subshell with them). */
 export function resolveNetworkEnv(args: string[]): { root: string; ptyRoot: string } | { error: string } {
-  const net = resolveNetworkRoot(positionals(args)[0] ?? optValue(args, "--network"));
-  if (!net) return { error: "no network resolved — pass one: convoy env|shell <network-dir> (or export ST_ROOT)." };
+  const net = resolveNetworkRoot(positionals(args)[0] ?? optValue(args, "--network")); // never null (falls back to the convoy default)
   const root = resolve(expandTilde(net));
-  if (!isDir(root)) return { error: `network dir not found: ${root}` };
+  if (!isDir(root)) return { error: `network dir not found: ${root} — run \`convoy init\` to create it, or pass an existing network.` };
   return { root, ptyRoot: checkPtyRoot(net).ptyRoot };
 }
 
@@ -281,7 +283,7 @@ export async function cmdDoctor(args: string[]): Promise<number> {
     err(`unrecognized flag "${badFlag}" for \`convoy doctor\`. See \`convoy doctor --help\`.`);
     return 2;
   }
-  const network = optValue(args, "--network");
+  const network = resolveNetworkRoot(optValue(args, "--network"));
   const quick = hasFlag(args, "--quick");
   const full = hasFlag(args, "--full");
   let failures = 0;
@@ -444,20 +446,23 @@ export async function cmdInit(args: string[]): Promise<number> {
     err(`unrecognized flag "${badFlag}" for \`convoy init\`. See \`convoy init --help\`.`);
     return 2;
   }
-  const dir = positionals(args)[0];
+  // No dir + no ST_ROOT → convoy's OWN default network (get-started-with-zero-config); an explicit dir or
+  // ambient ST_ROOT still wins. Idempotent: the default usually already exists (it's where the live network
+  // sits), so mkdir is a no-op and st init re-inits in place without clobbering.
+  const explicit = positionals(args)[0];
+  const dir = resolveNetworkRoot(explicit ?? null);
   // Fail EARLY on a too-long network path — before creating anything — not cryptically at spawn.
-  const pr = checkPtyRoot(dir ?? null);
+  const pr = checkPtyRoot(dir);
   if (!pr.ok) {
     err(pathTooLongMessage(pr.bytes));
     err(`resolved PTY_ROOT would be ${pr.ptyRoot}`);
     return 1;
   }
-  if (dir && !existsSync(dir)) {
+  if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
     out(`created ${dir}`);
   }
-  const stArgs = ["init"];
-  if (dir) stArgs.push(dir);
+  const stArgs = ["init", dir];
   if (hasFlag(args, "--no-channel")) stArgs.push("--no-channel");
   const r = await run("st", stArgs);
   if (r.stdout) process.stdout.write(r.stdout);
@@ -471,7 +476,7 @@ export async function cmdInit(args: string[]): Promise<number> {
   } catch (e) {
     err(`personas: ${e instanceof Error ? e.message : String(e)} (add/cos will retry)`);
   }
-  out(`✓ network ready at ${dir ?? "the default network"}. Add agents with \`convoy add <role> --identity <id>${dir ? ` --network ${dir}` : ""}\`.`);
+  out(`✓ network ready at ${dir}. Add agents with \`convoy add <role> --identity <id>${explicit ? ` --network ${dir}` : ""}\`.`);
   return 0;
 }
 
@@ -604,7 +609,7 @@ export async function cmdCos(args: string[]): Promise<number> {
 }
 
 export async function cmdLs(args: string[]): Promise<number> {
-  const network = optValue(args, "--network");
+  const network = resolveNetworkRoot(optValue(args, "--network"));
   const liveOnly = hasFlag(args, "--live-only");
   const json = hasFlag(args, "--json");
   const agents = await new Bus(network).agents(true);
@@ -631,7 +636,7 @@ export async function cmdRemove(args: string[]): Promise<number> {
     err(`unrecognized flag "${badFlag}" for \`convoy remove\`. See \`convoy remove --help\`.`);
     return 2;
   }
-  const network = optValue(args, "--network");
+  const network = resolveNetworkRoot(optValue(args, "--network"));
   const identity = positionals(args)[0];
   if (!identity) {
     err("missing identity. Usage: convoy remove <id>");
@@ -664,7 +669,7 @@ export async function cmdRemove(args: string[]): Promise<number> {
  *  coupling), this RE-READS pty.toml, so edits to permission-mode / displayName / the ding ref /
  *  --resume take effect. The manual escape hatch for "I changed pty.toml and want it applied." */
 export async function cmdReload(args: string[]): Promise<number> {
-  const network = optValue(args, "--network");
+  const network = resolveNetworkRoot(optValue(args, "--network"));
   const identity = positionals(args)[0];
   if (!identity) {
     err("missing identity. Usage: convoy reload <id> [--dry-run] [--write-only]");

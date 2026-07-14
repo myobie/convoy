@@ -136,6 +136,8 @@ function printHelp(): void {
       "  reload <id>    re-materialize an agent from its pty.toml, healing the ding to carry --root (kill + respawn) [--dry-run --write-only]\n" +
       "  pretrust <dir>... batch pre-trust agent dirs before spawning many back-to-back (avoids the trust race) [--config-dir]\n" +
       "  install-cli    symlink convoy + st + pty onto PATH (default ~/.local/bin) — reliable, no npm link [--bin <dir>]\n" +
-      "  personas <status|install>\n",
+      "  personas <status|install>\n" +
+      "\nDEFAULT NETWORK: when no network arg / --network / ST_ROOT is given, convoy uses $XDG_STATE_HOME|~/.local/state + /convoy\n" +
+      "  (its own default, not st's ~/.local/state/smalltalk) — so `convoy init` then `convoy up` works with zero config.\n",
   );
 }
