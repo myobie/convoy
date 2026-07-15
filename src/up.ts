@@ -68,24 +68,34 @@ export function workerCrashed(status: SupervisedSession["status"], exitCode: num
   return status === "vanished" || (status === "exited" && exitCode !== 0); // !== 0 dings nonzero (incl. an agent OOM = 137 via pty ≥ #72) AND a no-record null; only a reaped-grandchild OOM (Case B) escapes — OS-level follow-up
 }
 
-/** The ORCHESTRATORS to ding when a session crash-loops or gives up: convoy can't read a role off a pty session,
- *  but permanence is a clean proxy — the CoS + supervisors run `--permanent`, workers don't — so the permanent
- *  convoy agents ARE the cos+supervisor tier. Plus any explicit `notify` ids. The crashing agent itself is
- *  excluded (no self-ding). Targets are BUS IDENTITIES (via `resolve`, injectable for tests), deduped. Pure. */
+/** Who to ding when `crashed` crash-loops / vanishes: (a) the CoS — ALWAYS (a network-wide backstop),
+ *  resolved by its `convoy.tier=cos` tag (no hardcoded id); plus (b) `crashed`'s ACTUAL supervisor — the
+ *  `convoy.spawner` bus id recorded on it at `convoy add` (whoever spawned it owns it); plus any explicit
+ *  `notify` ids. NOT every `--permanent` agent: permanence is long-lived-ness, NOT "orchestrator" — every
+ *  repo-owner runs `--permanent`, so the old permanent-set target paged the ENTIRE standing crew on one
+ *  throwaway worker crash (Nathan-flagged). The crashing agent itself is excluded (no self-ding). Targets
+ *  are BUS IDENTITIES (via `resolve`, injectable for tests), deduped. Pure. */
 export function crashDingTargets(
+  crashed: SupervisedSession,
   sessions: readonly SupervisedSession[],
-  crasherBusId: string | null,
   notify: readonly string[],
   resolve: (s: SupervisedSession) => string | null,
 ): string[] {
   const ids = new Set<string>();
+  // (a) the CoS — always, resolved by tag so it survives naming/id churn.
   for (const s of sessions) {
-    if (s.tags["ptyfile.session"] === undefined) continue; // a convoy agent, not a bare pty session
-    if (s.tags["strategy"] !== "permanent") continue; // orchestrators are permanent (cos + supervisors)
+    if (s.tags["convoy.tier"] !== "cos") continue;
     const bid = resolve(s);
-    if (bid && bid !== crasherBusId) ids.add(bid);
+    if (bid) ids.add(bid);
   }
-  for (const n of notify) if (n && n !== crasherBusId) ids.add(n);
+  // (b) the crashed agent's actual supervisor — the spawner recorded at add-time.
+  const spawner = crashed.tags["convoy.spawner"];
+  if (spawner) ids.add(spawner);
+  // explicit extras.
+  for (const n of notify) if (n) ids.add(n);
+  // never self-ding.
+  const crasherBusId = resolve(crashed);
+  if (crasherBusId) ids.delete(crasherBusId);
   return [...ids];
 }
 
@@ -176,7 +186,7 @@ export async function up(opts: UpOptions): Promise<number> {
   const supervised = new Set<string>();
   const workerDinged = new Set<string>(); // gone workers aren't respawned → dedup so we ding each once
   const notify = opts.notify ?? [];
-  const dingTargets = (sessions: readonly SupervisedSession[], crasherBusId: string | null): string[] => crashDingTargets(sessions, crasherBusId, notify, busIdOf);
+  const dingTargets = (crashed: SupervisedSession, sessions: readonly SupervisedSession[]): string[] => crashDingTargets(crashed, sessions, notify, busIdOf);
 
   const tick = async (): Promise<void> => {
     const now = new Date();
@@ -185,19 +195,20 @@ export async function up(opts: UpOptions): Promise<number> {
       if (isPermanent(s)) permanentKeys.add(s.name);
       const permanent = isPermanent(s) || permanentKeys.has(s.name);
 
-      // WORKER-CRASH: a gone NON-permanent convoy agent (a worker). convoy up does NOT respawn it — workers are
-      // ephemeral (Nomad no-respawn) — but a CRASH is ding-worthy so its supervisor + cos know. Gate on the exit
-      // (workers have no fast-fail loop, since they're never respawned): a nonzero exitCode or a hard `vanished`
-      // death dings; a CLEAN exit (code 0 = the worker finished its task) stays SILENT (routine). Dedup: a gone
-      // worker re-appears every tick, so ding ONCE. Target = cos + all permanent supervisors (no spawner tag
-      // exists to derive the specific owner yet — a follow-up).
-      if (!permanent && s.tags["ptyfile.session"] !== undefined) {
+      // WORKER-CRASH: a gone NON-permanent convoy agent (a worker's HARNESS session — NOT its ding sidecar,
+      // which would double-ding the same busId). convoy up does NOT respawn it — workers are ephemeral (Nomad
+      // no-respawn) — but a CRASH is ding-worthy so its supervisor + cos know. Gate on the exit (workers have no
+      // fast-fail loop, since they're never respawned): a nonzero exitCode or a hard `vanished` death dings; a
+      // CLEAN exit (code 0 = the worker finished its task) stays SILENT (routine). Dedup: a gone worker re-appears
+      // every tick, so ding ONCE. Target = cos + the worker's actual supervisor (its `convoy.spawner` tag) — see
+      // crashDingTargets.
+      if (!permanent && s.tags["ptyfile.session"] !== undefined && s.tags["ptyfile.session"] !== "ding") {
         if (!gone(s) || workerDinged.has(s.name)) continue;
         workerDinged.add(s.name); // mark regardless — a clean-exit worker must not be re-checked either
         if (!workerCrashed(s.status, s.exitCode)) continue; // routine clean exit (code 0) → silent
         const id = busIdOf(s) ?? logicalId(s);
         const reason = s.status === "vanished" ? "vanished (hard death — no exit record)" : s.exitCode === null ? "killed with no exit code (hard kill / OOM)" : `exit ${s.exitCode}`;
-        const targets = dingTargets(sessions, busIdOf(s));
+        const targets = dingTargets(s, sessions);
         const body = `Worker ${id} CRASHED (${reason}) on network ${root} — it is NOT auto-respawned (workers are ephemeral). NEEDS ATTENTION: its supervisor should decide whether to re-spawn or redirect it. Inspect: pty peek ${s.name}.`;
         for (const t of targets) await sendDing(root, t, `worker crash: ${id}`, body);
         emit(
@@ -234,17 +245,26 @@ export async function up(opts: UpOptions): Promise<number> {
         state.set(key, decision.tags);
         const ok = await host.respawn(s); // pty restart -y — preserves the real command (strips tags)
         // Re-assert permanence + the counter AFTER the restart (it strips runtime tags) — for pty's
-        // display + so a fresh host still recognizes this session. convoy's own store is authoritative.
-        host.setTags(s.name, { ...writtenTags(decision.tags), strategy: "permanent" });
+        // display + so a fresh host still recognizes this session. convoy's own store is authoritative. Also
+        // re-assert the crash-ding targeting tags (convoy.tier/convoy.spawner) from the pre-respawn session, so
+        // a permanent respawn (e.g. cos restarting) doesn't drop the CoS backstop / a supervisor's spawner link.
+        host.setTags(s.name, {
+          ...writtenTags(decision.tags),
+          strategy: "permanent",
+          ...(s.tags["convoy.tier"] ? { "convoy.tier": s.tags["convoy.tier"] } : {}),
+          ...(s.tags["convoy.spawner"] ? { "convoy.spawner": s.tags["convoy.spawner"] } : {}),
+        });
         emit(
           { type: "respawn", identity: logicalId(s), session: s.name, reason: "exited", attempt: decision.tags.consecutiveFastFails, cap: limit, ok, ts: isoString(now) },
           `[convoy-up] respawn ${logicalId(s)} session=${s.name} reason=exited attempt=${decision.tags.consecutiveFastFails}/${limit}${ok ? "" : " (spawn FAILED)"}`,
         );
         // Ding the orchestrators on a fast-fail CRASH (consecutiveFastFails ≥ 1) — the agent died fast + is being
-        // respawned; gate OUT routine respawns (counter 0 = a normal/slow exit, not a crash) as noise.
-        if (decision.tags.consecutiveFastFails >= 1) {
+        // respawned; gate OUT routine respawns (counter 0 = a normal/slow exit, not a crash) as noise. A ding
+        // SIDECAR is still respawned above, but never generates its own crash-ding (the agent's covers it → no
+        // double-ding).
+        if (decision.tags.consecutiveFastFails >= 1 && s.tags["ptyfile.session"] !== "ding") {
           const id = busIdOf(s) ?? logicalId(s);
-          const targets = dingTargets(sessions, busIdOf(s));
+          const targets = dingTargets(s, sessions);
           const body = `Agent ${id} CRASHED (fast-fail ${decision.tags.consecutiveFastFails}/${limit}) on network ${root} — convoy up is auto-respawning it. NEEDS ATTENTION if it keeps crashing: pty peek ${s.name} to see why.`;
           for (const t of targets) await sendDing(root, t, `crash: ${id}`, body);
         }
@@ -257,11 +277,15 @@ export async function up(opts: UpOptions): Promise<number> {
           `[convoy-up] flapping ${logicalId(s)} session=${s.name} — parked after ${e.counter} fast fails (cap ${e.limit}/${e.window}s). \`pty tag ${s.name} --rm strategy.status\` to retry.`,
         );
         // Ding the orchestrators on a GAVE-UP (flapping) — the strongest signal: convoy up stopped respawning it.
-        // This fires once (the tick that transitions to flapping; subsequent ticks `skip`), so no ding spam.
-        const id = busIdOf(s) ?? logicalId(s);
-        const targets = dingTargets(sessions, busIdOf(s));
-        const body = `Agent ${id} GAVE UP — flapping/parked after ${e.counter} fast fails (cap ${e.limit}/${e.window}s) on network ${root}. NEEDS ATTENTION: it is crash-looping and convoy up stopped respawning it. Inspect (pty peek ${s.name}), fix the cause, then clear its strategy.status to retry.`;
-        for (const t of targets) await sendDing(root, t, `flapping: ${id}`, body);
+        // This fires once (the tick that transitions to flapping; subsequent ticks `skip`), so no ding spam. A ding
+        // SIDECAR is excluded (the agent's crash/flap ding covers the incident → no double-ding; independent
+        // ding-health monitoring is a separate concern).
+        if (s.tags["ptyfile.session"] !== "ding") {
+          const id = busIdOf(s) ?? logicalId(s);
+          const targets = dingTargets(s, sessions);
+          const body = `Agent ${id} GAVE UP — flapping/parked after ${e.counter} fast fails (cap ${e.limit}/${e.window}s) on network ${root}. NEEDS ATTENTION: it is crash-looping and convoy up stopped respawning it. Inspect (pty peek ${s.name}), fix the cause, then clear its strategy.status to retry.`;
+          for (const t of targets) await sendDing(root, t, `flapping: ${id}`, body);
+        }
       }
     }
   };
