@@ -119,14 +119,23 @@ export function dingCommand(busId: string, claudeSessionId: string, root?: strin
 
 /** Serialize the per-agent pty.toml (pty's manifest format — NOT a convoy.toml). Pins the session ids
  *  to `<prefix>.<agentShort>` (claude) and `<prefix>.<agentShort>.ding` so the ding + name refs stay
- *  stable across respawns; prefix defaults to the short hostname. */
-export function writePtyToml(dir: string, spec: AgentSpec): void {
+ *  stable across respawns; prefix defaults to the short hostname. `opts.spawner` (the bus id of whoever ran
+ *  `convoy add`, from their ST_AGENT) is stamped on the HARNESS session so a crash-ding reaches this agent's
+ *  ACTUAL supervisor, not the whole permanent crew (see up.ts crashDingTargets). */
+export function writePtyToml(dir: string, spec: AgentSpec, opts?: { spawner?: string | null }): void {
   const busId = spec.identity; // the bus identity, e.g. convoy-claude
   const root = spec.networkRoot;
   const harnessId = sessionId(spec); // e.g. silber.convoy (agentShort strips the -claude/-codex suffix)
   const dingId = `${harnessId}.ding`; // e.g. silber.convoy.ding
   const permanent = specPermanent(spec);
   const stTag = root ? { "st.network": root } : {};
+  // Crash-ding targeting tags (read by up.ts crashDingTargets), HARNESS session only — never the ding sidecar
+  // (else a crash double-dings the same busId): `convoy.tier=cos` marks the CoS (the always-ding backstop);
+  // `convoy.spawner` records who spawned this agent (its supervisor) so a worker crash pages the parent.
+  const agentTags: Record<string, string> = {
+    ...(spec.role === "chief-of-staff" ? { "convoy.tier": "cos" } : {}),
+    ...(opts?.spawner ? { "convoy.spawner": opts.spawner } : {}),
+  };
   const env: Record<string, string> = { ST_AGENT: busId };
   if (root) {
     env["ST_ROOT"] = root;
@@ -141,7 +150,7 @@ export function writePtyToml(dir: string, spec: AgentSpec): void {
       [HARNESS_SESSION_KEY[spec.harness]]: {
         id: harnessId,
         command: harnessCommand(spec.harness, specPermissionMode(spec), bootPrompt(spec.role)),
-        tags: { role: "agent", ...(permanent ? { strategy: "permanent" } : {}), ...stTag },
+        tags: { role: "agent", ...(permanent ? { strategy: "permanent" } : {}), ...stTag, ...agentTags },
         env: harnessEnv,
       },
       ...(usesDing(spec)
@@ -255,7 +264,9 @@ export async function nativeLaunch(spec: AgentSpec): Promise<{ spawned: string[]
 
   writeContextFiles(dir, spec);
   writeHooks(dir);
-  writePtyToml(dir, spec);
+  // The spawner = whoever ran `convoy add` (their bus id, from ST_AGENT) — stamped so a crash-ding reaches
+  // this agent's actual supervisor, not the whole permanent crew. Null when a human spawns it (→ cos-only ding).
+  writePtyToml(dir, spec, { spawner: process.env["ST_AGENT"] ?? null });
 
   // Create the agent's bus member folder BEFORE spawning `st ding`. The ding watcher errors at startup
   // if `$ST_ROOT/<identity>/{inbox,archive}` is missing → the worker is never poked → it parks. `st

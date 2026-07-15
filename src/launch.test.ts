@@ -143,6 +143,33 @@ describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("crash-ding tags: cos gets convoy.tier=cos + spawner gets convoy.spawner, on the HARNESS session only (not the ding)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-ptytoml-tags-"));
+    try {
+      // a worker spawned by a supervisor: convoy.spawner recorded, no convoy.tier (not cos)
+      writePtyToml(dir, spec({ role: "worker", identity: "wk-claude" }), { spawner: "sup-claude" });
+      const wkToml = readFileSync(join(dir, "pty.toml"), "utf8");
+      expect(wkToml).toContain('"convoy.spawner" = "sup-claude"');
+      expect(wkToml).not.toContain("convoy.tier");
+      // the spawner tag is on the harness session, NOT the ding (else a crash double-dings the same busId)
+      expect(wkToml.match(/convoy\.spawner/g)?.length).toBe(1);
+
+      // the CoS: convoy.tier=cos stamped (the always-ding backstop)
+      writePtyToml(dir, spec({ role: "chief-of-staff", identity: "cos-claude" }));
+      const cosToml = readFileSync(join(dir, "pty.toml"), "utf8");
+      expect(cosToml).toContain('"convoy.tier" = "cos"');
+      expect(cosToml).not.toContain("convoy.spawner"); // no spawner passed
+
+      // no spawner passed + not cos → neither tag (a human-spawned worker → cos-only ding downstream)
+      writePtyToml(dir, spec({ role: "worker", identity: "wk2-claude" }));
+      const plainToml = readFileSync(join(dir, "pty.toml"), "utf8");
+      expect(plainToml).not.toContain("convoy.spawner");
+      expect(plainToml).not.toContain("convoy.tier");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("discoverSmalltalkDir (fresh-install hook discovery, no SMALLTALK_DIR needed)", () => {

@@ -6,37 +6,39 @@ const sess = (name: string, tags: Record<string, string>): SupervisedSession => 
 // Test resolver: read the bus id from a plain "busId" tag (the real one reads ST_AGENT out of the pty.toml).
 const resolve = (s: SupervisedSession): string | null => s.tags["busId"] ?? null;
 
-describe("crashDingTargets — who gets the crash/flap ding", () => {
-  it("dings the permanent convoy agents (cos + supervisors); excludes workers, non-agents, and the crasher", () => {
-    const sessions = [
-      sess("cos", { "ptyfile.session": "claude", strategy: "permanent", busId: "cos-claude" }),
-      sess("sup", { "ptyfile.session": "claude", strategy: "permanent", busId: "sup-claude" }),
-      sess("wk", { "ptyfile.session": "claude", busId: "wk-claude" }), // worker: not permanent → not an orchestrator
-      sess("bare", { strategy: "permanent", busId: "bare" }), // not a convoy agent (no ptyfile.session)
-      sess("crasher", { "ptyfile.session": "claude", strategy: "permanent", busId: "crasher-claude" }),
-    ];
-    expect(crashDingTargets(sessions, "crasher-claude", [], resolve).sort()).toEqual(["cos-claude", "sup-claude"]);
+describe("crashDingTargets — cos + the crashed one's spawner (NOT the whole permanent crew)", () => {
+  const cos = sess("cos", { "ptyfile.session": "claude", strategy: "permanent", "convoy.tier": "cos", busId: "cos-claude" });
+  // Unrelated repo-owner agents — long-lived, so they run --permanent, but they are NOT orchestrators.
+  const appApple = sess("app-apple", { "ptyfile.session": "claude", strategy: "permanent", busId: "app-apple-claude" });
+  const evals = sess("evals", { "ptyfile.session": "claude", strategy: "permanent", busId: "evals-claude" });
+  const sup = sess("sup", { "ptyfile.session": "claude", strategy: "permanent", busId: "sup-claude" });
+
+  it("ACCEPTANCE: a worker crash pages ONLY cos + the worker's spawner — NOT unrelated permanent agents (Nathan's bug)", () => {
+    const crashed = sess("wk", { "ptyfile.session": "claude", busId: "crashtest", "convoy.spawner": "sup-claude" });
+    const targets = crashDingTargets(crashed, [cos, sup, appApple, evals, crashed], [], resolve).sort();
+    expect(targets).toEqual(["cos-claude", "sup-claude"]); // app-apple-claude / evals-claude NOT paged
+    expect(targets).not.toContain("app-apple-claude");
   });
 
-  it("adds --notify ids, dedups them, and still excludes the crasher", () => {
-    const sessions = [sess("cos", { "ptyfile.session": "claude", strategy: "permanent", busId: "cos-claude" })];
-    expect(crashDingTargets(sessions, "crasher", ["extra", "cos-claude", "crasher"], resolve).sort()).toEqual(["cos-claude", "extra"]);
+  it("dings ONLY cos when the crashed worker has no spawner tag (human-spawned → cos backstop only)", () => {
+    const crashed = sess("wk", { "ptyfile.session": "claude", busId: "crashtest" }); // no convoy.spawner
+    expect(crashDingTargets(crashed, [cos, appApple, crashed], [], resolve)).toEqual(["cos-claude"]);
   });
 
-  it("dedups a member's two sessions (harness + ding) to one bus id", () => {
-    const sessions = [
-      sess("cos.claude", { "ptyfile.session": "claude", strategy: "permanent", busId: "cos-claude" }),
-      sess("cos.ding", { "ptyfile.session": "ding", strategy: "permanent", busId: "cos-claude" }),
-    ];
-    expect(crashDingTargets(sessions, null, [], resolve)).toEqual(["cos-claude"]);
+  it("dedups when the spawner IS cos (cos spawned it directly) → a single cos ding", () => {
+    const crashed = sess("wk", { "ptyfile.session": "claude", busId: "crashtest", "convoy.spawner": "cos-claude" });
+    expect(crashDingTargets(crashed, [cos, crashed], [], resolve)).toEqual(["cos-claude"]);
   });
 
-  it("a session whose bus id can't be resolved is skipped (never dings a null/empty target)", () => {
-    const sessions = [
-      sess("cos", { "ptyfile.session": "claude", strategy: "permanent", busId: "cos-claude" }),
-      sess("mystery", { "ptyfile.session": "claude", strategy: "permanent" }), // no busId → resolve() null
-    ];
-    expect(crashDingTargets(sessions, null, [], resolve)).toEqual(["cos-claude"]);
+  it("adds --notify ids, dedups, and NEVER self-dings the crasher (even if it is the cos-tier)", () => {
+    // cos itself crashes: excluded from its own ding despite being cos-tier; notify still delivered + deduped.
+    expect(crashDingTargets(cos, [cos], ["extra", "cos-claude", "cos-claude"], resolve).sort()).toEqual(["extra"]);
+  });
+
+  it("skips an unresolvable cos-tier session (never dings a null/empty target)", () => {
+    const cosNoBus = sess("cos2", { "ptyfile.session": "claude", "convoy.tier": "cos" }); // no busId → resolve() null
+    const crashed = sess("wk", { "ptyfile.session": "claude", busId: "crashtest", "convoy.spawner": "sup-claude" });
+    expect(crashDingTargets(crashed, [cos, cosNoBus, sup, crashed], [], resolve).sort()).toEqual(["cos-claude", "sup-claude"]);
   });
 });
 
