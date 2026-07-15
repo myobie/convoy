@@ -1,8 +1,8 @@
 import { afterEach, describe, it, expect } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkPtyRoot, networkEnvExports, optValue, pathTooLongMessage, positionals, PTY_ROOT_MAX_BYTES, resolveNetworkEnv, resolveNetworkRoot, shellQuote, unknownFlag } from "./commands.ts";
+import { checkPtyRoot, existingPtyTomlIdentity, networkEnvExports, optValue, pathTooLongMessage, positionals, PTY_ROOT_MAX_BYTES, resolveNetworkEnv, resolveNetworkRoot, shellQuote, unknownFlag } from "./commands.ts";
 import { defaultConvoyNetwork } from "./paths.ts";
 
 describe("arg parsing: --flag=value form (silent-default trap)", () => {
@@ -187,6 +187,37 @@ describe("convoy env / shell — network env exports (footgun-proof targeting)",
       if (savedXdg === undefined) delete process.env["XDG_STATE_HOME"];
       else process.env["XDG_STATE_HOME"] = savedXdg;
       if (savedRoot !== undefined) process.env["ST_ROOT"] = savedRoot;
+    }
+  });
+});
+
+describe("existingPtyTomlIdentity — the convoy-add clobber guard (silent data-loss footgun)", () => {
+  it("reads the ST_AGENT (owning identity) from a dir's pty.toml", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-owner-"));
+    try {
+      writeFileSync(join(dir, "pty.toml"), '[sessions.claude.env]\nST_AGENT = "other-claude"\n');
+      expect(existingPtyTomlIdentity(dir)).toBe("other-claude");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is null when the dir has NO pty.toml (nothing to clobber → add proceeds)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-noowner-"));
+    try {
+      expect(existingPtyTomlIdentity(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is null for a pty.toml with no ST_AGENT (can't attribute → don't block)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-noagent-"));
+    try {
+      writeFileSync(join(dir, "pty.toml"), 'prefix = "x"\n');
+      expect(existingPtyTomlIdentity(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
