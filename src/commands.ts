@@ -212,7 +212,18 @@ function printDerived(pf: ReturnType<typeof preflight>): void {
   for (const w of pf.warnings) out(`  ! ${w}`);
 }
 
-async function launchSpec(spec: AgentSpec, o: { dryRun: boolean }): Promise<number> {
+/** The bus identity (ST_AGENT) declared in `<dir>/pty.toml`, or null if there's no readable pty.toml with
+ *  one. Lets `convoy add` refuse to SILENTLY clobber a pty.toml that belongs to a DIFFERENT agent. */
+export function existingPtyTomlIdentity(dir: string): string | null {
+  try {
+    const m = readFileSync(join(dir, "pty.toml"), "utf8").match(/ST_AGENT\s*=\s*"([^"]+)"/);
+    return m ? m[1] ?? null : null;
+  } catch {
+    return null; // no pty.toml / unreadable → nothing to clobber
+  }
+}
+
+async function launchSpec(spec: AgentSpec, o: { dryRun: boolean; force?: boolean }): Promise<number> {
   // Footgun-proof: clone role personas if missing (real runs only, no override).
   if (!o.dryRun && spec.personaOverride === null) {
     try {
@@ -230,6 +241,24 @@ async function launchSpec(spec: AgentSpec, o: { dryRun: boolean }): Promise<numb
     out();
     for (const e of pf.errors) err(e);
     return 1;
+  }
+
+  // Footgun-proof: `convoy add` writes pty.toml INTO the target dir (spec.workingDir ?? cwd). Refuse to
+  // SILENTLY clobber a pty.toml that already belongs to a DIFFERENT agent — running convoy add from a
+  // populated repo would overwrite that repo's agent manifest (invisible: the live session keeps running,
+  // but a reload / cold up then re-materializes the WRONG config). --dir places it elsewhere; --force overrides.
+  const targetDir = spec.workingDir ?? process.cwd();
+  const owner = existingPtyTomlIdentity(targetDir);
+  const foreign = owner !== null && owner !== spec.identity;
+  if (foreign && !o.force) {
+    const msg = `${join(targetDir, "pty.toml")} already belongs to a DIFFERENT agent "${owner}" — adding ${spec.identity} here would overwrite it (silent data loss). Use \`--dir <new-dir>\` to place ${spec.identity} elsewhere, or \`--force\` to overwrite here.`;
+    if (o.dryRun) err(`(dry run) WOULD REFUSE: ${msg}`);
+    else {
+      err(msg);
+      return 1;
+    }
+  } else if (foreign && o.force) {
+    out(`  ! --force: overwriting ${owner}'s pty.toml at ${join(targetDir, "pty.toml")}`);
   }
 
   if (o.dryRun) {
@@ -503,7 +532,7 @@ export async function cmdPersonas(args: string[]): Promise<number> {
 }
 
 export async function cmdAdd(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run"], ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--prefix", "--config-dir"]);
+  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run", "--force"], ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--prefix", "--config-dir"]);
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy add\` — refusing rather than silently ignoring it. See \`convoy add --help\`.`);
     return 2;
@@ -546,7 +575,7 @@ export async function cmdAdd(args: string[]): Promise<number> {
     configDir: optValue(args, "--config-dir"),
   };
   out(`convoy add — ${identity}`);
-  return launchSpec(spec, { dryRun: hasFlag(args, "--dry-run") });
+  return launchSpec(spec, { dryRun: hasFlag(args, "--dry-run"), force: hasFlag(args, "--force") });
 }
 
 async function ensureRepo(path: string, identity: string): Promise<void> {
@@ -564,7 +593,7 @@ async function ensureRepo(path: string, identity: string): Promise<void> {
 }
 
 export async function cmdCos(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run"], ["--repo", "--identity", "--transport", "--network", "--persona", "--prefix", "--config-dir"]);
+  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run", "--force"], ["--repo", "--identity", "--transport", "--network", "--persona", "--prefix", "--config-dir"]);
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy cos\` — refusing rather than silently ignoring it. See \`convoy cos --help\`.`);
     return 2;
@@ -603,7 +632,7 @@ export async function cmdCos(args: string[]): Promise<number> {
     prefix: optValue(args, "--prefix"),
     configDir: optValue(args, "--config-dir"),
   };
-  const rc = await launchSpec(spec, { dryRun });
+  const rc = await launchSpec(spec, { dryRun, force: hasFlag(args, "--force") });
   if (rc === 0 && !dryRun) out("The CoS will run its first-run interview on boot.");
   return rc;
 }
