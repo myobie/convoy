@@ -166,6 +166,7 @@ export function writePtyToml(dir: string, spec: AgentSpec, opts?: { spawner?: st
     },
   };
   writeFileSync(join(dir, "pty.toml"), tomlStringify(doc));
+  excludeFromGit(dir, ["pty.toml"]); // convoy-authored — keep it out of the composed repo's git status
 }
 
 /** Heal a PRE-#43 pty.toml so its ding survives a `pty restart` (which preserves the command but drops
@@ -212,6 +213,9 @@ function writeHooks(dir: string): void {
   };
   mkdirSync(join(dir, ".claude"), { recursive: true });
   writeFileSync(join(dir, ".claude", "settings.local.json"), `${JSON.stringify(settings, null, 2)}\n`);
+  // convoy-authored — keep it out of the composed repo's git status. Belt-and-suspenders + host-
+  // independent: some machines have a global gitignore for settings.local.json, most don't.
+  excludeFromGit(dir, [".claude/settings.local.json"]);
 }
 
 /** Add `names` to a repo's `.git/info/exclude` (per-repo, itself untracked) so the convoy-authored
@@ -286,6 +290,19 @@ export function writeContextFiles(dir: string, spec: AgentSpec): void {
   excludeFromGit(dir, authored);
 }
 
+/** Write ALL of convoy's agent wiring into the repo `dir` — the persona/ding context files
+ *  (PERSONA.md, DING-BUS.md, CLAUDE.local.md), the Claude Code hooks (.claude/settings.local.json),
+ *  and pty.toml — each of which self-excludes itself from `git status` via .git/info/exclude so convoy
+ *  never dirties a repo it composes into. Extracted from nativeLaunch so the clean-worktree guarantee
+ *  is unit-testable without spawning. Composing this into a clean repo leaves `git status` empty. */
+export function writeAgentFiles(dir: string, spec: AgentSpec): void {
+  writeContextFiles(dir, spec);
+  writeHooks(dir);
+  // The spawner = whoever ran `convoy add` (their bus id, from ST_AGENT) — stamped so a crash-ding reaches
+  // this agent's actual supervisor, not the whole permanent crew. Null when a human spawns it (→ cos-only ding).
+  writePtyToml(dir, spec, { spawner: process.env["ST_AGENT"] ?? null });
+}
+
 /**
  * Native launch: write all wiring + spawn the agent's sessions. Replaces the `st launch --fresh`
  * shell + spawnFromPtyFile stopgap. Returns the spawned pty session names.
@@ -310,11 +327,7 @@ export async function nativeLaunch(spec: AgentSpec): Promise<{ spawned: string[]
     }
   }
 
-  writeContextFiles(dir, spec);
-  writeHooks(dir);
-  // The spawner = whoever ran `convoy add` (their bus id, from ST_AGENT) — stamped so a crash-ding reaches
-  // this agent's actual supervisor, not the whole permanent crew. Null when a human spawns it (→ cos-only ding).
-  writePtyToml(dir, spec, { spawner: process.env["ST_AGENT"] ?? null });
+  writeAgentFiles(dir, spec);
 
   // Create the agent's bus member folder BEFORE spawning `st ding`. The ding watcher errors at startup
   // if `$ST_ROOT/<identity>/{inbox,archive}` is missing → the worker is never poked → it parks. `st
