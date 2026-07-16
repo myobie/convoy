@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bootPrompt, dingCommand, discoverSmalltalkDir, harnessCommand, regenerateDingRoot, writePtyToml } from "./launch.ts";
+import { bootPrompt, dingCommand, discoverSmalltalkDir, harnessCommand, regenerateDingRoot, writeContextFiles, writePtyToml } from "./launch.ts";
 import type { AgentSpec } from "./agent-spec.ts";
 
 describe("native launch command builders (cold-start boot-prompt)", () => {
@@ -285,6 +285,121 @@ PTY_ROOT = "/net/convoy/pty"
     try {
       writeFileSync(join(dir, "pty.toml"), '[sessions.claude]\nid = "x"\ncommand = "exec claude"\n');
       expect(regenerateDingRoot(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("writeContextFiles — clean-worktree wiring (convoy must not dirty a repo it composes into)", () => {
+  function makeSpec(dir: string, personaPath: string): AgentSpec {
+    return {
+      harness: "claude",
+      role: "worker",
+      identity: "wk-1",
+      transport: "ding",
+      networkRoot: null,
+      personaOverride: personaPath,
+      workingDir: dir,
+      permanentOverride: null,
+      prefix: null,
+      configDir: null,
+    };
+  }
+
+  it("wires imports via CLAUDE.local.md, NEVER touches a tracked CLAUDE.md, and excludes all authored files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-ctx-"));
+    try {
+      mkdirSync(join(dir, ".git", "info"), { recursive: true }); // pose as a git repo (no git binary needed)
+      const personaPath = join(dir, "persona-src.md");
+      writeFileSync(personaPath, "# worker persona\n");
+      const trackedClaudeMd = "# Project CLAUDE.md\n\nsome existing project rules\n";
+      writeFileSync(join(dir, "CLAUDE.md"), trackedClaudeMd);
+
+      writeContextFiles(dir, makeSpec(dir, personaPath));
+
+      // the tracked CLAUDE.md is untouched — the whole point of the fix
+      expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe(trackedClaudeMd);
+      // the imports land in CLAUDE.local.md instead
+      const local = readFileSync(join(dir, "CLAUDE.local.md"), "utf8");
+      expect(local).toContain("@PERSONA.md");
+      expect(local).toContain("@DING-BUS.md");
+      // the context files themselves are written
+      expect(readFileSync(join(dir, "PERSONA.md"), "utf8")).toBe("# worker persona\n");
+      expect(existsSync(join(dir, "DING-BUS.md"))).toBe(true);
+      // and all three are kept out of git via .git/info/exclude
+      const exclude = readFileSync(join(dir, ".git", "info", "exclude"), "utf8");
+      expect(exclude).toContain("PERSONA.md");
+      expect(exclude).toContain("DING-BUS.md");
+      expect(exclude).toContain("CLAUDE.local.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is idempotent — a second run adds no duplicate imports, exclude entries, or marker", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-ctx-idem-"));
+    try {
+      mkdirSync(join(dir, ".git", "info"), { recursive: true });
+      const personaPath = join(dir, "persona-src.md");
+      writeFileSync(personaPath, "# p\n");
+      writeContextFiles(dir, makeSpec(dir, personaPath));
+      writeContextFiles(dir, makeSpec(dir, personaPath));
+      const local = readFileSync(join(dir, "CLAUDE.local.md"), "utf8");
+      expect(local.match(/@PERSONA\.md/g)?.length).toBe(1);
+      expect(local.match(/@DING-BUS\.md/g)?.length).toBe(1);
+      const exclude = readFileSync(join(dir, ".git", "info", "exclude"), "utf8");
+      expect(exclude.match(/^PERSONA\.md$/gm)?.length).toBe(1);
+      expect(exclude.match(/agent context \(local/g)?.length).toBe(1); // single marker
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not double-load: an import already in a tracked CLAUDE.md is not re-added to CLAUDE.local.md", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-ctx-migrate-"));
+    try {
+      mkdirSync(join(dir, ".git", "info"), { recursive: true });
+      const personaPath = join(dir, "persona-src.md");
+      writeFileSync(personaPath, "# p\n");
+      // a dir the OLD (pre-exclude) convoy already wired — imports live in the tracked CLAUDE.md
+      writeFileSync(join(dir, "CLAUDE.md"), "# proj\n@PERSONA.md\n@DING-BUS.md\n");
+      writeContextFiles(dir, makeSpec(dir, personaPath));
+      // no CLAUDE.local.md needed — both imports are already loaded via CLAUDE.md
+      expect(existsSync(join(dir, "CLAUDE.local.md"))).toBe(false);
+      // but the untracked PERSONA/DING files are still swept out of git status
+      const exclude = readFileSync(join(dir, ".git", "info", "exclude"), "utf8");
+      expect(exclude).toContain("PERSONA.md");
+      expect(exclude).toContain("DING-BUS.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("appends to a pre-existing .git/info/exclude instead of clobbering it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-ctx-preexc-"));
+    try {
+      mkdirSync(join(dir, ".git", "info"), { recursive: true });
+      writeFileSync(join(dir, ".git", "info", "exclude"), "# user excludes\n*.log\n");
+      const personaPath = join(dir, "persona-src.md");
+      writeFileSync(personaPath, "# p\n");
+      writeContextFiles(dir, makeSpec(dir, personaPath));
+      const exclude = readFileSync(join(dir, ".git", "info", "exclude"), "utf8");
+      expect(exclude).toContain("*.log"); // pre-existing content preserved
+      expect(exclude).toContain("PERSONA.md"); // convoy entry appended
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("non-git dir: writes context files without crashing and never fabricates a .git", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-ctx-nogit-"));
+    try {
+      const personaPath = join(dir, "persona-src.md");
+      writeFileSync(personaPath, "# p\n");
+      writeContextFiles(dir, makeSpec(dir, personaPath));
+      expect(existsSync(join(dir, "CLAUDE.local.md"))).toBe(true);
+      expect(existsSync(join(dir, ".git"))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

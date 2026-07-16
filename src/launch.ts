@@ -214,28 +214,76 @@ function writeHooks(dir: string): void {
   writeFileSync(join(dir, ".claude", "settings.local.json"), `${JSON.stringify(settings, null, 2)}\n`);
 }
 
-/** Install the persona (copy the resolved base) + the ding-bus instructions, and wire CLAUDE.md
- *  `@`-imports for both. Never clobber a pre-existing CLAUDE.md — only append missing import lines. */
-function writeContextFiles(dir: string, spec: AgentSpec): void {
+/** Add `names` to a repo's `.git/info/exclude` (per-repo, itself untracked) so the convoy-authored
+ *  context files never show up in `git status` — convoy must not leave a repo it composes into dirty.
+ *  Idempotent (skips names already listed) and best-effort: silently no-ops when `dir` isn't a plain
+ *  git repo. NOT a tracked `.gitignore` (that would itself dirty the tree) and NOT a behavior change
+ *  for a repo that legitimately tracks these files — an exclude entry for an already-tracked path is a
+ *  git no-op, so such a repo keeps committing them. Worktrees/submodules (`.git` is a file, not a dir)
+ *  are skipped rather than mis-resolved; their untracked files simply show as before. */
+function excludeFromGit(dir: string, names: string[]): void {
+  if (names.length === 0) return;
+  const gitDir = join(dir, ".git");
+  try {
+    if (!statSync(gitDir).isDirectory()) return; // no repo here, or a worktree/submodule `.git` file
+  } catch {
+    return; // not a git repo — nothing to exclude
+  }
+  const infoDir = join(gitDir, "info");
+  const excludePath = join(infoDir, "exclude");
+  let existing = "";
+  try {
+    existing = readFileSync(excludePath, "utf8");
+  } catch {
+    // no exclude file yet — we'll create it
+  }
+  const lines = new Set(existing.split("\n").map((l) => l.trim()));
+  const missing = names.filter((n) => !lines.has(n));
+  if (missing.length === 0) return;
+  const marker = "# convoy: agent context (local, not committed)";
+  const block = (lines.has(marker) ? "" : `${marker}\n`) + missing.join("\n") + "\n";
+  const sep = existing && !existing.endsWith("\n") ? "\n" : "";
+  mkdirSync(infoDir, { recursive: true });
+  writeFileSync(excludePath, `${existing}${sep}${block}`);
+}
+
+/** Install the persona (copy the resolved base) + the ding-bus instructions, and wire their
+ *  `@`-imports through **CLAUDE.local.md** — which Claude Code auto-loads alongside CLAUDE.md and
+ *  treats identically, but is a personal/local file meant to stay out of version control. convoy must
+ *  never dirty the repo's tracked CLAUDE.md just by composing into it, so we no longer append there.
+ *  The convoy-authored files (PERSONA.md, DING-BUS.md, CLAUDE.local.md) are kept out of `git status`
+ *  via .git/info/exclude. An import already present in a tracked CLAUDE.md (a dir wired by the older,
+ *  pre-exclude convoy) is skipped, so we never double-load the persona. */
+export function writeContextFiles(dir: string, spec: AgentSpec): void {
   const imports: string[] = [];
+  const authored: string[] = []; // convoy-authored files to keep out of git
 
   const persona = resolvedPersonaPath(spec);
   if (persona && existsSync(persona)) {
     writeFileSync(join(dir, "PERSONA.md"), readFileSync(persona, "utf8"));
     imports.push("@PERSONA.md");
+    authored.push("PERSONA.md");
   }
   if (usesDing(spec)) {
     writeFileSync(join(dir, "DING-BUS.md"), DING_BUS_MD);
     imports.push("@DING-BUS.md");
+    authored.push("DING-BUS.md");
   }
 
+  // Wire the imports via CLAUDE.local.md — never the tracked CLAUDE.md. Skip any import already loaded
+  // via a tracked CLAUDE.md (older dirs the pre-exclude convoy appended to) so it isn't double-loaded.
   const claudeMd = join(dir, "CLAUDE.md");
-  const existing = existsSync(claudeMd) ? readFileSync(claudeMd, "utf8") : "";
-  const missing = imports.filter((i) => !existing.includes(i));
+  const claudeMdContent = existsSync(claudeMd) ? readFileSync(claudeMd, "utf8") : "";
+  const localMd = join(dir, "CLAUDE.local.md");
+  const localContent = existsSync(localMd) ? readFileSync(localMd, "utf8") : "";
+  const missing = imports.filter((i) => !localContent.includes(i) && !claudeMdContent.includes(i));
   if (missing.length > 0) {
-    const sep = existing && !existing.endsWith("\n") ? "\n" : "";
-    writeFileSync(claudeMd, `${existing}${sep}${missing.join("\n")}\n`);
+    const sep = localContent && !localContent.endsWith("\n") ? "\n" : "";
+    writeFileSync(localMd, `${localContent}${sep}${missing.join("\n")}\n`);
   }
+  if (existsSync(localMd)) authored.push("CLAUDE.local.md");
+
+  excludeFromGit(dir, authored);
 }
 
 /**
