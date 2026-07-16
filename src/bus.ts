@@ -1,8 +1,11 @@
-// The smalltalk bus (members / status). Ported from Sources/ConvoyKit/Bus.swift. Shells the `st` CLI
-// for now — smalltalk (@myobie/coord) doesn't yet export a bus lib (its index only exports VERSION);
-// migrate to native lib calls when it does. Network-pinned via ST_ROOT + nested PTY_ROOT.
+// The smalltalk bus (members / status). Reads via @myobie/coord's read-only `createBusReader` — the
+// in-process bus reader smalltalk exports — instead of spawning `st agents` and parsing its JSON.
+// Same data, no subprocess, type-safe. The reader is pinned to an explicit state root (see
+// `effectiveRoot`); writes (`setStatus`) still go through the `st` CLI, which is env-pinned.
 
+import { createBusReader } from "@myobie/coord";
 import { run } from "./exec.ts";
+import { defaultConvoyNetwork } from "./paths.ts";
 
 export type AgentState = "offline" | "available" | "busy" | "away" | "dnd" | "unknown";
 
@@ -10,46 +13,14 @@ export interface Agent {
   identity: string;
   status: AgentState;
   name: string | null;
-  lastActivity: number | null; // ms epoch, fractional; present only with --enrich
-  inbox: number | null; // present only with --enrich
+  lastActivity: number | null; // ms epoch, fractional; present only with enrich
+  inbox: number | null; // present only with enrich
 }
 
-const KNOWN: readonly AgentState[] = ["offline", "available", "busy", "away", "dnd", "unknown"];
 const LIVE: ReadonlySet<AgentState> = new Set<AgentState>(["available", "busy", "away", "dnd"]);
 
 export function isLive(s: AgentState): boolean {
   return LIVE.has(s);
-}
-
-function normalizeState(s: unknown): AgentState {
-  return typeof s === "string" && (KNOWN as readonly string[]).includes(s) ? (s as AgentState) : "unknown";
-}
-
-/** Decode `st agents --json` output. Tolerant of the planned `identity` → `agent` key rename and of
- *  unknown states (decode to `unknown`, never throw) — mirrors the Swift Codable. */
-export function decodeAgents(json: string): Agent[] {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(json);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(raw)) return [];
-  const out: Agent[] = [];
-  for (const o of raw) {
-    if (o === null || typeof o !== "object") continue;
-    const rec = o as Record<string, unknown>;
-    const identity = (rec["identity"] ?? rec["agent"]) as string | undefined;
-    if (!identity) continue;
-    out.push({
-      identity,
-      status: normalizeState(rec["status"]),
-      name: typeof rec["name"] === "string" ? (rec["name"] as string) : null,
-      lastActivity: typeof rec["lastActivity"] === "number" ? (rec["lastActivity"] as number) : null,
-      inbox: typeof rec["inbox"] === "number" ? (rec["inbox"] as number) : null,
-    });
-  }
-  return out;
 }
 
 export class Bus {
@@ -59,24 +30,49 @@ export class Bus {
     this.root = root;
   }
 
+  /** The state root the reader reads. `createBusReader` requires an explicit root (no env fallback of
+   *  its own), so resolve one the same way `resolveNetworkRoot` does: an explicit root wins, else the
+   *  ambient ST_ROOT, else convoy's own default network (never st's global smalltalk root). */
+  private effectiveRoot(): string {
+    return this.root ?? process.env["ST_ROOT"] ?? defaultConvoyNetwork();
+  }
+
+  /** Bus members. `enrich` adds `lastActivity` + `inbox`. Fail-soft: a missing/unreadable root reads
+   *  as no agents (`[]`), exactly as the old `st agents` shell-out returned `[]` on failure. Kept async
+   *  (the reader is synchronous) so callers are untouched. `status` arrives already normalized to the
+   *  validated State enum, so there is nothing to decode/normalize convoy-side. */
+  async agents(enrich = false): Promise<Agent[]> {
+    try {
+      const reader = createBusReader({ root: this.effectiveRoot() });
+      const rows = enrich ? reader.agents({ enrich: true }) : reader.agents();
+      return rows.map((a) => ({
+        identity: a.identity,
+        status: a.status,
+        name: a.name ?? null,
+        lastActivity: "lastActivity" in a && typeof a.lastActivity === "number" ? a.lastActivity : null,
+        inbox: "inbox" in a && typeof a.inbox === "number" ? a.inbox : null,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
   private env(): NodeJS.ProcessEnv | undefined {
     if (!this.root) return undefined;
     return { ...process.env, ST_ROOT: this.root, PTY_ROOT: `${this.root}/pty` };
-  }
-
-  async agents(enrich = false): Promise<Agent[]> {
-    const args = ["agents", "--json"];
-    if (enrich) args.push("--enrich");
-    const r = await run("st", args, { env: this.env() });
-    return r.ok ? decodeAgents(r.stdout) : [];
   }
 
   async setStatus(identity: string, state: string): Promise<void> {
     await run("st", ["status", identity, "--set", state], { env: this.env() });
   }
 
+  /** Connectivity probe: the reader constructs + lists without throwing. */
   async roundTrips(): Promise<boolean> {
-    const r = await run("st", ["agents", "--json"], { env: this.env() });
-    return r.ok;
+    try {
+      createBusReader({ root: this.effectiveRoot() }).agents();
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

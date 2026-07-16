@@ -21,6 +21,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "@myobie/coord": "file:../smalltalk",
     "@myobie/pty": "file:../pty",
     "smol-toml": "^1.7.0"
   }
