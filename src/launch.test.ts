@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bootPrompt, dingCommand, discoverSmalltalkDir, harnessCommand, regenerateDingRoot, writeContextFiles, writePtyToml } from "./launch.ts";
+import { bootPrompt, dingCommand, discoverSmalltalkDir, harnessCommand, regenerateDingRoot, writeAgentFiles, writeContextFiles, writePtyToml } from "./launch.ts";
 import type { AgentSpec } from "./agent-spec.ts";
 
 describe("native launch command builders (cold-start boot-prompt)", () => {
@@ -402,6 +403,78 @@ describe("writeContextFiles — clean-worktree wiring (convoy must not dirty a r
       expect(existsSync(join(dir, ".git"))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("convoy add clean-worktree — pty.toml + settings + context, EVERY authored file (#51 gap)", () => {
+  function spec(dir: string, personaPath: string, networkRoot: string): AgentSpec {
+    return {
+      harness: "claude",
+      role: "worker",
+      identity: "wk-1",
+      transport: "ding",
+      networkRoot,
+      personaOverride: personaPath,
+      workingDir: dir,
+      permanentOverride: null,
+      prefix: null,
+      configDir: null,
+    };
+  }
+
+  it("writePtyToml keeps pty.toml out of git status via .git/info/exclude", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-ptyexc-"));
+    try {
+      mkdirSync(join(dir, ".git", "info"), { recursive: true }); // pose as a git repo (no git binary needed)
+      writePtyToml(dir, spec(dir, join(dir, "p.md"), join(dir, ".net")), { spawner: null });
+      expect(existsSync(join(dir, "pty.toml"))).toBe(true);
+      expect(readFileSync(join(dir, ".git", "info", "exclude"), "utf8")).toContain("pty.toml");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The acceptance cos asked for: compose an agent into a CLEAN git repo, assert `git status
+  // --porcelain` is EMPTY (every convoy-authored file — pty.toml, .claude/settings.local.json,
+  // PERSONA.md, DING-BUS.md, CLAUDE.local.md — is excluded, and the tracked CLAUDE.md is untouched).
+  it("acceptance: writeAgentFiles leaves a clean repo — git status --porcelain is empty", () => {
+    const savedSt = process.env["SMALLTALK_DIR"];
+    const repo = mkdtempSync(join(tmpdir(), "convoy-clean-repo-"));
+    const stub = mkdtempSync(join(tmpdir(), "convoy-st-stub-"));
+    const personaDir = mkdtempSync(join(tmpdir(), "convoy-persona-"));
+    const netRoot = mkdtempSync(join(tmpdir(), "convoy-net-"));
+    try {
+      // stub SMALLTALK_DIR so writeHooks' hookRefs resolves (it gates on this hook script existing)
+      mkdirSync(join(stub, "examples", "claude-code", "hooks"), { recursive: true });
+      writeFileSync(join(stub, "examples", "claude-code", "hooks", "session-start.sh"), "#!/bin/sh\n");
+      process.env["SMALLTALK_DIR"] = stub;
+      // persona source lives OUTSIDE the repo (only its copy, PERSONA.md, lands in the repo → excluded)
+      const persona = join(personaDir, "worker.md");
+      writeFileSync(persona, "# worker persona\n");
+      // a real git repo, clean, with a committed CLAUDE.md
+      const git = (...a: string[]): void => void execFileSync("git", a, { cwd: repo });
+      git("init", "-q");
+      git("config", "user.email", "t@t");
+      git("config", "user.name", "t");
+      writeFileSync(join(repo, "CLAUDE.md"), "# project rules\n");
+      git("add", "-A");
+      git("commit", "-qm", "init");
+      // compose the agent in
+      writeAgentFiles(repo, spec(repo, persona, netRoot));
+      // convoy really did write its files…
+      expect(existsSync(join(repo, "pty.toml"))).toBe(true);
+      expect(existsSync(join(repo, ".claude", "settings.local.json"))).toBe(true);
+      expect(existsSync(join(repo, "PERSONA.md"))).toBe(true);
+      expect(existsSync(join(repo, "DING-BUS.md"))).toBe(true);
+      // …and the tracked CLAUDE.md is untouched
+      expect(readFileSync(join(repo, "CLAUDE.md"), "utf8")).toBe("# project rules\n");
+      // THE acceptance: the worktree is clean
+      expect(execFileSync("git", ["status", "--porcelain"], { cwd: repo }).toString()).toBe("");
+    } finally {
+      if (savedSt === undefined) delete process.env["SMALLTALK_DIR"];
+      else process.env["SMALLTALK_DIR"] = savedSt;
+      for (const d of [repo, stub, personaDir, netRoot]) rmSync(d, { recursive: true, force: true });
     }
   });
 });
