@@ -14,7 +14,7 @@ import {
   type SessionInfo,
 } from "@myobie/pty/client";
 import { commandFingerprint, parseStrategyTags, type StrategyTags } from "./flapping-cap.ts";
-import { CONVOY_DIR } from "./paths.ts";
+import { CONVOY_DIR, stRootOf } from "./paths.ts";
 import { childEnv, run } from "./exec.ts";
 
 function cleanEnv(overlay: NodeJS.ProcessEnv): Record<string, string> {
@@ -39,7 +39,7 @@ export async function spawnFromPtyFile(dir: string, root: string | null): Promis
   for (const def of file.sessions) {
     const name = def.id ?? `${def.shortName}-${randomBytes(3).toString("hex")}`;
     const tags: Record<string, string> = { ...(def.tags ?? {}), ptyfile: tomlPath, "ptyfile.session": def.shortName };
-    const env = cleanEnv({ ...process.env, ...(def.env ?? {}), ...(root ? { ST_ROOT: root, PTY_ROOT: `${root}/pty` } : {}) });
+    const env = cleanEnv({ ...process.env, ...(def.env ?? {}), ...(root ? { ST_ROOT: stRootOf(root), PTY_ROOT: `${root}/pty` } : {}) });
     try {
       await spawnDaemon({ name, command: "sh", args: ["-c", def.command], displayCommand: def.command, cwd: dir, displayName: def.displayName, tags, env });
       spawned.push(name);

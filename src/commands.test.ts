@@ -140,26 +140,28 @@ describe("convoy env / shell — network env exports (footgun-proof targeting)",
     expect(shellQuote("it's")).toBe("'it'\\''s'"); // embedded single quote escaped
   });
 
-  it("networkEnvExports emits ST_ROOT + PTY_ROOT and UNSETS ST_AGENT for a human shell", () => {
-    expect(networkEnvExports("/net/convoy", "/net/convoy/pty", null)).toEqual([
-      "export ST_ROOT='/net/convoy'",
+  it("networkEnvExports emits ST_ROOT (smalltalk) + PTY_ROOT + CONVOY_NETWORK and UNSETS ST_AGENT for a human shell", () => {
+    expect(networkEnvExports("/net/convoy", null)).toEqual([
+      "export ST_ROOT='/net/convoy/smalltalk'",
       "export PTY_ROOT='/net/convoy/pty'",
+      "export CONVOY_NETWORK='/net/convoy'",
       "unset ST_AGENT",
     ]);
   });
 
   it("networkEnvExports SETS ST_AGENT when acting-as an identity", () => {
-    expect(networkEnvExports("/net/convoy", "/net/convoy/pty", "convoy-claude")[2]).toBe("export ST_AGENT='convoy-claude'");
+    expect(networkEnvExports("/net/convoy", "convoy-claude")[3]).toBe("export ST_AGENT='convoy-claude'");
   });
 
-  it("resolveNetworkEnv derives {root, ptyRoot=<root>/pty} from a REAL network dir (never hardcoded)", () => {
+  it("resolveNetworkEnv derives {networkDir, stRoot=<dir>/smalltalk, ptyRoot=<dir>/pty} from a REAL network dir", () => {
     const dir = mkdtempSync(join(tmpdir(), "convoy-env-"));
     try {
       const r = resolveNetworkEnv([dir]);
-      expect("root" in r).toBe(true);
-      if ("root" in r) {
-        expect(r.root).toBe(dir);
-        expect(r.ptyRoot).toBe(join(dir, "pty")); // <ST_ROOT>/pty per the isolation model
+      expect("networkDir" in r).toBe(true);
+      if ("networkDir" in r) {
+        expect(r.networkDir).toBe(dir);
+        expect(r.stRoot).toBe(join(dir, "smalltalk")); // ST_ROOT is the bus subdir
+        expect(r.ptyRoot).toBe(join(dir, "pty"));
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -180,8 +182,8 @@ describe("convoy env / shell — network env exports (footgun-proof targeting)",
     delete process.env["ST_ROOT"];
     try {
       const r = resolveNetworkEnv([]);
-      expect("root" in r).toBe(true);
-      if ("root" in r) expect(r.root).toBe(net); // <XDG_STATE_HOME>/convoy/default, NOT ~/.local/state/smalltalk
+      expect("networkDir" in r).toBe(true);
+      if ("networkDir" in r) expect(r.networkDir).toBe(net); // <XDG_STATE_HOME>/convoy/default, NOT ~/.local/state/smalltalk
     } finally {
       if (savedXdg === undefined) delete process.env["XDG_STATE_HOME"];
       else process.env["XDG_STATE_HOME"] = savedXdg;
@@ -288,16 +290,15 @@ describe("convoy ls --tree — spawn-parentage forest + remote section", () => {
 });
 
 describe("cross-machine liveness (item 2) — readAgentPresence + shortHost", () => {
-  it("readAgentPresence: reads status MTIME + host from <root>/<id>/{status,host}", () => {
+  it("readAgentPresence: status MTIME from <root>/<id>/status + host from the folder-name prefix (<host>.<identity>)", () => {
     const root = mkdtempSync(join(tmpdir(), "convoy-pres-"));
     try {
-      mkdirSync(join(root, "hetz-codex"), { recursive: true });
-      writeFileSync(join(root, "hetz-codex", "status"), "available\n");
-      writeFileSync(join(root, "hetz-codex", "host"), "hetz.example.com\n");
-      const p = readAgentPresence(root, "hetz-codex");
+      mkdirSync(join(root, "hetz.hetz-codex"), { recursive: true });
+      writeFileSync(join(root, "hetz.hetz-codex", "status"), "available\n");
+      const p = readAgentPresence(root, "hetz.hetz-codex");
       expect(typeof p.statusMtime).toBe("number");
       expect(p.statusMtime).toBeGreaterThan(0);
-      expect(p.host).toBe("hetz.example.com"); // trimmed
+      expect(p.host).toBe("hetz"); // derived from the folder-name prefix, NOT a host file
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

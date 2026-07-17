@@ -55,6 +55,12 @@ export function agentShort(identity: string): string {
 export function sessionId(s: AgentSpec): string {
   return `${specPrefix(s)}.${agentShort(s.identity)}`;
 }
+/** The bus identity (`ST_AGENT`): the short-host prefix + the FULL identity, keeping the harness suffix
+ *  (e.g. `silber.convoy-claude`). Host-prefixed so each machine's agents are distinct bus folders that
+ *  sync as a clean cross-machine union; the host is read back from this prefix (no separate host file). */
+export function busAgentId(s: AgentSpec): string {
+  return `${specPrefix(s)}.${s.identity}`;
+}
 export function specPermanent(s: AgentSpec): boolean {
   return s.permanentOverride ?? permanentByRole(s.role);
 }

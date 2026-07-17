@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { run } from "./exec.ts";
 import { pretrustDirs, pretrustDirsCodex } from "./trust.ts";
-import { defaultConvoyNetwork } from "./paths.ts";
+import { defaultConvoyNetwork, stRootOf } from "./paths.ts";
 import {
   classify,
   effectiveLimit,
@@ -104,11 +104,13 @@ export function crashDingTargets(
 const DING_SENDER = "convoy-up";
 async function sendDing(root: string, to: string, subject: string, body: string): Promise<boolean> {
   try {
-    // st requires the SENDER to have a bus folder; convoy-up is a system pseudo-agent, so ensure its folder.
-    mkdirSync(join(root, DING_SENDER, "inbox"), { recursive: true });
-    mkdirSync(join(root, DING_SENDER, "archive"), { recursive: true });
+    // The bus lives at <net>/smalltalk (ST_ROOT), not the network dir. st requires the SENDER to have a
+    // bus folder; convoy-up is a system pseudo-agent, so ensure its folder under the smalltalk root.
+    const stRoot = stRootOf(root);
+    mkdirSync(join(stRoot, DING_SENDER, "inbox"), { recursive: true });
+    mkdirSync(join(stRoot, DING_SENDER, "archive"), { recursive: true });
     const r = await run("st", ["message", "send", to, "--from", DING_SENDER, "--subject", subject, "--priority", "high", "-m", body], {
-      env: { ...process.env, ST_ROOT: root },
+      env: { ...process.env, ST_ROOT: stRoot },
     });
     return r.ok;
   } catch {
@@ -119,7 +121,9 @@ async function sendDing(root: string, to: string, subject: string, body: string)
 /** up/down's network fallback: ambient ST_ROOT, else convoy's OWN default network (not st/pty's global
  *  ~/.local/state/smalltalk root — the ST_ROOT-unset footgun). An explicit `up <network>` still wins. */
 function defaultRoot(): string {
-  return process.env["ST_ROOT"] ?? defaultConvoyNetwork();
+  // The network DIR (not the bus root): prefer CONVOY_NETWORK (set by `convoy env`/`shell`), else legacy
+  // ambient ST_ROOT, else convoy's default network. An explicit `up <network>` still wins.
+  return process.env["CONVOY_NETWORK"] ?? process.env["ST_ROOT"] ?? defaultConvoyNetwork();
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));

@@ -39,3 +39,21 @@ export function isNetworkName(value: string): boolean {
 export function defaultConvoyNetwork(): string {
   return networkDirForName(DEFAULT_NETWORK_NAME);
 }
+
+/** The on-disk layout INSIDE a network dir. `ST_ROOT` points at `smalltalk/` (the bus — SYNCED across
+ *  machines), NOT the network dir itself; `pty/` (runtime, machine-local) + `worktrees/` (workspaces)
+ *  are siblings OUTSIDE the sync boundary. Shared so every ST_ROOT/PTY_ROOT wiring site agrees. */
+export interface NetworkLayout {
+  dir: string;
+  stRoot: string;
+  ptyRoot: string;
+  worktrees: string;
+}
+export function networkLayout(dir: string): NetworkLayout {
+  return { dir, stRoot: join(dir, "smalltalk"), ptyRoot: join(dir, "pty"), worktrees: join(dir, "worktrees") };
+}
+
+/** The bus root (`ST_ROOT`) for a network dir: `<dir>/smalltalk`. */
+export function stRootOf(dir: string): string {
+  return join(dir, "smalltalk");
+}

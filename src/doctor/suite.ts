@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isGone } from "@myobie/pty/client";
 import { childEnv, run } from "../exec.ts";
+import { stRootOf } from "../paths.ts";
 import { claudeConfigPath, codexConfigPath, pretrustDir, untrustDirs, untrustDirsCodex } from "../trust.ts";
 
 /** A file bundled under src/doctor/fixtures/, resolved from this module (works from an installed pkg). */
@@ -41,8 +42,8 @@ const NET_MAX_BYTES = 70;
 
 export interface Sandbox {
   sb: string; // the sandbox root (removed on teardown)
-  net: string; // the isolated network root = ST_ROOT; PTY_ROOT = net/pty
-  env: NodeJS.ProcessEnv; // ST_ROOT/PTY_ROOT pinned to the sandbox
+  net: string; // the isolated network DIR; ST_ROOT = net/smalltalk, PTY_ROOT = net/pty
+  env: NodeJS.ProcessEnv; // ST_ROOT (bus)/PTY_ROOT pinned to the sandbox
 }
 
 /** Make a short, isolated sandbox network. Throws with an actionable message if the path is too long. */
@@ -55,7 +56,7 @@ export function makeSandbox(tag: string): Sandbox {
     throw new Error(`sandbox network path too long (${bytes} bytes) — set TMPDIR to a shorter dir`);
   }
   _sandboxPaths.add(sb); // for the end-of-suite backstop sweep
-  return { sb, net, env: { ...process.env, ST_ROOT: net, PTY_ROOT: join(net, "pty") } };
+  return { sb, net, env: { ...process.env, ST_ROOT: stRootOf(net), PTY_ROOT: join(net, "pty"), CONVOY_NETWORK: net } };
 }
 
 /** Run a convoy subcommand against the sandbox (its ST_ROOT/PTY_ROOT + explicit --network). */

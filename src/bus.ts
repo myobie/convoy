@@ -5,7 +5,7 @@
 
 import { createBusReader } from "@myobie/coord";
 import { run } from "./exec.ts";
-import { defaultConvoyNetwork } from "./paths.ts";
+import { defaultConvoyNetwork, stRootOf } from "./paths.ts";
 
 export type AgentState = "offline" | "available" | "busy" | "away" | "dnd" | "unknown";
 
@@ -34,7 +34,9 @@ export class Bus {
    *  its own), so resolve one the same way `resolveNetworkRoot` does: an explicit root wins, else the
    *  ambient ST_ROOT, else convoy's own default network (never st's global smalltalk root). */
   private effectiveRoot(): string {
-    return this.root ?? process.env["ST_ROOT"] ?? defaultConvoyNetwork();
+    // `this.root` and ambient ST_ROOT are already the BUS root (<net>/smalltalk); the default fallback
+    // is the smalltalk subdir of convoy's default network, not the network dir itself.
+    return this.root ?? process.env["ST_ROOT"] ?? stRootOf(defaultConvoyNetwork());
   }
 
   /** Bus members. `enrich` adds `lastActivity` + `inbox`. Fail-soft: a missing/unreadable root reads
@@ -59,7 +61,9 @@ export class Bus {
 
   private env(): NodeJS.ProcessEnv | undefined {
     if (!this.root) return undefined;
-    return { ...process.env, ST_ROOT: this.root, PTY_ROOT: `${this.root}/pty` };
+    // `st status` writes under ST_ROOT (the bus root); it doesn't read PTY_ROOT, so we don't derive one
+    // here (this.root is <net>/smalltalk, so <root>/pty would be wrong anyway).
+    return { ...process.env, ST_ROOT: this.root };
   }
 
   async setStatus(identity: string, state: string): Promise<void> {

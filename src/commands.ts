@@ -7,7 +7,7 @@ import { homedir, hostname } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "./exec.ts";
-import { CONVOY_DIR, defaultConvoyNetwork, isNetworkName, networkDirForName } from "./paths.ts";
+import { CONVOY_DIR, defaultConvoyNetwork, isNetworkName, networkDirForName, networkLayout, stRootOf } from "./paths.ts";
 import { defaultBinDir, installClis } from "./install-cli.ts";
 import { Bus, isLive, type Agent } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, workspaceOfPtyfile, type SupervisedSession } from "./host.ts";
@@ -136,13 +136,15 @@ export function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-/** The eval-safe shell exports that target a network's env: ST_ROOT (the network dir) + PTY_ROOT
- *  (`<ST_ROOT>/pty`, the per-network pty root), and ST_AGENT — SET to `identity` if acting-as an agent,
- *  else explicitly UNSET (a human shell is not an agent; clears any stale ST_AGENT). Pure. */
-export function networkEnvExports(root: string, ptyRoot: string, identity: string | null): string[] {
+/** The eval-safe shell exports that target a network's env, DERIVED from the network dir: ST_ROOT (the
+ *  bus, `<dir>/smalltalk`), PTY_ROOT (`<dir>/pty`), CONVOY_NETWORK (the network dir itself), and ST_AGENT
+ *  — SET to `identity` if acting-as an agent, else explicitly UNSET (a human shell is not an agent). Pure. */
+export function networkEnvExports(networkDir: string, identity: string | null): string[] {
+  const l = networkLayout(networkDir);
   return [
-    `export ST_ROOT=${shellQuote(root)}`,
-    `export PTY_ROOT=${shellQuote(ptyRoot)}`,
+    `export ST_ROOT=${shellQuote(l.stRoot)}`,
+    `export PTY_ROOT=${shellQuote(l.ptyRoot)}`,
+    `export CONVOY_NETWORK=${shellQuote(networkDir)}`,
     identity ? `export ST_AGENT=${shellQuote(identity)}` : "unset ST_AGENT",
   ];
 }
@@ -150,11 +152,12 @@ export function networkEnvExports(root: string, ptyRoot: string, identity: strin
 /** Resolve the `[network]` positional (or `--network`, else ambient ST_ROOT) to an absolute
  *  `{ root, ptyRoot }` derived from the real network layout (never hardcoded) — or an `{ error }`.
  *  Shared by `convoy env` (print exports) and `convoy shell` (spawn a subshell with them). */
-export function resolveNetworkEnv(args: string[]): { root: string; ptyRoot: string } | { error: string } {
+export function resolveNetworkEnv(args: string[]): { networkDir: string; stRoot: string; ptyRoot: string } | { error: string } {
   const net = resolveNetworkRoot(positionals(args)[0] ?? optValue(args, "--network")); // never null (falls back to the convoy default)
-  const root = resolve(expandTilde(net));
-  if (!isDir(root)) return { error: `network dir not found: ${root} — run \`convoy init\` to create it, or pass an existing network.` };
-  return { root, ptyRoot: checkPtyRoot(net).ptyRoot };
+  const networkDir = resolve(expandTilde(net));
+  if (!isDir(networkDir)) return { error: `network dir not found: ${networkDir} — run \`convoy init\` to create it, or pass an existing network.` };
+  const l = networkLayout(networkDir);
+  return { networkDir, stRoot: l.stRoot, ptyRoot: l.ptyRoot };
 }
 
 /** `convoy env [network] [--identity <id>]` — print eval-safe exports for a network's env, so
@@ -172,7 +175,7 @@ export function cmdEnv(args: string[]): number {
     err(r.error);
     return 1;
   }
-  for (const line of networkEnvExports(r.root, r.ptyRoot, optValue(args, "--identity"))) out(line);
+  for (const line of networkEnvExports(r.networkDir, optValue(args, "--identity"))) out(line);
   return 0;
 }
 
@@ -193,10 +196,10 @@ export async function cmdShell(args: string[]): Promise<number> {
   }
   const identity = optValue(args, "--identity");
   const shell = process.env["SHELL"] || "/bin/sh";
-  const env: NodeJS.ProcessEnv = { ...process.env, ST_ROOT: r.root, PTY_ROOT: r.ptyRoot, CONVOY_NETWORK: r.root };
+  const env: NodeJS.ProcessEnv = { ...process.env, ST_ROOT: r.stRoot, PTY_ROOT: r.ptyRoot, CONVOY_NETWORK: r.networkDir };
   if (identity) env["ST_AGENT"] = identity;
   else delete env["ST_AGENT"];
-  process.stderr.write(`convoy shell → network ${r.root} (ST_ROOT + PTY_ROOT set${identity ? `, ST_AGENT=${identity}` : ", ST_AGENT unset"}). Type 'exit' to leave.\n`);
+  process.stderr.write(`convoy shell → network ${r.networkDir} (ST_ROOT=${r.stRoot} + PTY_ROOT set${identity ? `, ST_AGENT=${identity}` : ", ST_AGENT unset"}). Type 'exit' to leave.\n`);
   return await new Promise<number>((done) => {
     const child = spawn(shell, [], { stdio: "inherit", env });
     child.on("exit", (code) => done(code ?? 0));
@@ -236,7 +239,7 @@ async function launchSpec(spec: AgentSpec, o: { dryRun: boolean; force?: boolean
     }
   }
 
-  const existing = (await new Bus(spec.networkRoot).agents()).map((a) => a.identity);
+  const existing = (await new Bus(spec.networkRoot ? stRootOf(spec.networkRoot) : null).agents()).map((a) => a.identity);
   const pf = preflight(spec, existing);
   printDerived(pf);
   if (!pf.ok) {
@@ -357,7 +360,7 @@ export async function cmdDoctor(args: string[]): Promise<number> {
   }
 
   out("Bus");
-  const bus = new Bus(network);
+  const bus = new Bus(stRootOf(network));
   if (await bus.roundTrips()) {
     const agents = await bus.agents(true);
     const live = agents.filter((a) => isLive(a.status)).length;
@@ -482,6 +485,7 @@ export async function cmdInit(args: string[]): Promise<number> {
   // sits), so mkdir is a no-op and st init re-inits in place without clobbering.
   const explicit = positionals(args)[0];
   const dir = resolveNetworkRoot(explicit ?? null);
+  const layout = networkLayout(dir);
   // Fail EARLY on a too-long network path — before creating anything — not cryptically at spawn.
   const pr = checkPtyRoot(dir);
   if (!pr.ok) {
@@ -489,11 +493,14 @@ export async function cmdInit(args: string[]): Promise<number> {
     err(`resolved PTY_ROOT would be ${pr.ptyRoot}`);
     return 1;
   }
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-    out(`created ${dir}`);
-  }
-  const stArgs = ["init", dir];
+  // Create the network STRUCTURE: smalltalk/ (the bus, ST_ROOT, synced across machines) + pty/ (runtime,
+  // machine-local) + worktrees/ (workspaces). Idempotent (mkdir -p). `st init` targets the smalltalk root.
+  const fresh = !existsSync(dir);
+  mkdirSync(layout.stRoot, { recursive: true });
+  mkdirSync(layout.ptyRoot, { recursive: true });
+  mkdirSync(layout.worktrees, { recursive: true });
+  if (fresh) out(`created network ${dir} (smalltalk/ + pty/ + worktrees/)`);
+  const stArgs = ["init", layout.stRoot];
   if (hasFlag(args, "--no-channel")) stArgs.push("--no-channel");
   const r = await run("st", stArgs);
   if (r.stdout) process.stdout.write(r.stdout);
@@ -715,19 +722,16 @@ export function renderForest(roots: readonly AgentTreeNode[], label: (a: Agent) 
  *  --tree gate. mtime is meaningful cross-machine only because the sync is mtime-preserving. */
 export function readAgentPresence(root: string | null, identity: string): { statusMtime: number | null; host: string | null } {
   if (!root) return { statusMtime: null, host: null };
-  const base = join(root, identity);
   let statusMtime: number | null = null;
   try {
-    statusMtime = statSync(join(base, "status")).mtimeMs;
+    statusMtime = statSync(join(root, identity, "status")).mtimeMs;
   } catch {
-    // no status file
+    // no status file → mtime null (falls back to the activity heuristic)
   }
-  let host: string | null = null;
-  try {
-    host = readFileSync(join(base, "host"), "utf8").trim() || null;
-  } catch {
-    // no host file
-  }
+  // Host is the FOLDER-NAME prefix of the host-scoped bus id (`<host>.<identity>`), NOT a separate host
+  // file — the redesign encodes host in the folder name (cos's call). Absent prefix → host unknown.
+  const dot = identity.indexOf(".");
+  const host = dot > 0 ? identity.slice(0, dot) : null;
   return { statusMtime, host };
 }
 
@@ -760,7 +764,7 @@ export async function cmdLs(args: string[]): Promise<number> {
   const network = resolveNetworkRoot(optValue(args, "--network"));
   const liveOnly = hasFlag(args, "--live-only");
   const json = hasFlag(args, "--json");
-  const agents = await new Bus(network).agents(true);
+  const agents = await new Bus(stRootOf(network)).agents(true);
   const shown = liveOnly ? agents.filter((a) => isLive(a.status)) : agents;
   if (json) {
     out(JSON.stringify(shown));
@@ -777,7 +781,7 @@ export async function cmdLs(args: string[]): Promise<number> {
     const thisHost = shortHost(hostname());
     const now = Date.now();
     const localPty = await localAgentMap(network);
-    const pres = new Map(agents.map((a) => [a.identity, readAgentPresence(network, a.identity)]));
+    const pres = new Map(agents.map((a) => [a.identity, readAgentPresence(stRootOf(network), a.identity)]));
     const isLocal = (id: string): boolean => {
       const h = pres.get(id)?.host;
       return h != null ? shortHost(h) === thisHost : localPty.has(id); // host when known, else #50 pty-presence
@@ -846,7 +850,7 @@ export async function cmdRemove(args: string[]): Promise<number> {
     err("missing identity. Usage: convoy remove <id>");
     return 2;
   }
-  const members = (await new Bus(network).agents()).map((a) => a.identity);
+  const members = (await new Bus(stRootOf(network)).agents()).map((a) => a.identity);
   if (!members.includes(identity)) {
     err(`no agent "${identity}" on this network. \`convoy ls\` to list members.`);
     return 1;

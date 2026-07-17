@@ -10,10 +10,10 @@ import { fileURLToPath } from "node:url";
 import { parse as tomlParse, stringify as tomlStringify } from "smol-toml";
 import { spawnFromPtyFile } from "./host.ts";
 import { ensureInstalled } from "./personas.ts";
-import { resolvedPersonaPath, sessionId, specPermanent, specPermissionMode, type AgentSpec, type Harness } from "./agent-spec.ts";
+import { busAgentId, resolvedPersonaPath, sessionId, specPermanent, specPermissionMode, type AgentSpec, type Harness } from "./agent-spec.ts";
 import type { Role } from "./role.ts";
 import { pretrustDir, pretrustDirsCodex } from "./trust.ts";
-import { CONVOY_DIR } from "./paths.ts";
+import { CONVOY_DIR, stRootOf } from "./paths.ts";
 
 // The pty session key is per-harness: claude → [sessions.claude], codex → [sessions.codex]. (Before,
 // this was hardcoded "claude", so `--harness codex` silently wrote a claude session — a false-harness
@@ -124,8 +124,8 @@ export function dingCommand(busId: string, claudeSessionId: string, root?: strin
  *  `convoy add`, from their ST_AGENT) is stamped on the HARNESS session so a crash-ding reaches this agent's
  *  ACTUAL supervisor, not the whole permanent crew (see up.ts crashDingTargets). */
 export function writePtyToml(dir: string, spec: AgentSpec, opts?: { spawner?: string | null }): void {
-  const busId = spec.identity; // the bus identity, e.g. convoy-claude
-  const root = spec.networkRoot;
+  const busId = busAgentId(spec); // the host-prefixed bus identity, e.g. silber.convoy-claude
+  const root = spec.networkRoot; // the network DIR; ST_ROOT is <root>/smalltalk (the bus), PTY_ROOT is <root>/pty
   const harnessId = sessionId(spec); // e.g. silber.convoy (agentShort strips the -claude/-codex suffix)
   const dingId = `${harnessId}.ding`; // e.g. silber.convoy.ding
   const permanent = specPermanent(spec);
@@ -139,7 +139,7 @@ export function writePtyToml(dir: string, spec: AgentSpec, opts?: { spawner?: st
   };
   const env: Record<string, string> = { ST_AGENT: busId };
   if (root) {
-    env["ST_ROOT"] = root;
+    env["ST_ROOT"] = stRootOf(root); // the bus root is <net>/smalltalk, NOT the network dir
     env["PTY_ROOT"] = `${root}/pty`;
   }
   // CLAUDE_CONFIG_DIR relocates Claude Code's whole config (auth/settings/skills) — harness session only,
@@ -158,7 +158,7 @@ export function writePtyToml(dir: string, spec: AgentSpec, opts?: { spawner?: st
         ? {
             ding: {
               id: dingId,
-              command: dingCommand(busId, harnessId, root),
+              command: dingCommand(busId, harnessId, root ? stRootOf(root) : null),
               tags: { role: "ding", ...(permanent ? { strategy: "permanent" } : {}), ...stTag },
               env,
             },
@@ -331,12 +331,13 @@ export async function nativeLaunch(spec: AgentSpec): Promise<{ spawned: string[]
   writeAgentFiles(dir, spec);
 
   // Create the agent's bus member folder BEFORE spawning `st ding`. The ding watcher errors at startup
-  // if `$ST_ROOT/<identity>/{inbox,archive}` is missing → the worker is never poked → it parks. `st
-  // launch` used to create these as part of launch wiring; convoy owns that wiring now, so this is
-  // convoy's root responsibility, and getting the ORDER right (folder → then ding) kills the race at
-  // the source. (smalltalk's `st ding mkdir -p` is defense-in-depth on top of this.)
+  // if `$ST_ROOT/<agent>/{inbox,archive}` is missing → the worker is never poked → it parks. `st launch`
+  // used to create these; convoy owns that wiring now, so getting the ORDER right (folder → then ding)
+  // kills the race at the source. The folder is `<net>/smalltalk/<host>.<identity>/` (ST_ROOT is the
+  // smalltalk/ subdir; the agent is the host-prefixed bus id). (smalltalk's `st ding mkdir -p` is
+  // defense-in-depth on top of this.)
   if (spec.networkRoot) {
-    const member = join(spec.networkRoot, spec.identity);
+    const member = join(stRootOf(spec.networkRoot), busAgentId(spec));
     mkdirSync(join(member, "inbox"), { recursive: true });
     mkdirSync(join(member, "archive"), { recursive: true });
   }

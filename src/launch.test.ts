@@ -70,7 +70,7 @@ describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
       expect(toml).toContain('id = "silber.convoy.ding"');
       expect(toml).toContain('prefix = "silber.convoy"');
       expect(toml).toContain("exec claude --permission-mode bypassPermissions");
-      expect(toml).toContain("st ding silber.convoy --identity convoy-claude");
+      expect(toml).toContain("st ding silber.convoy --identity silber.convoy-claude"); // host-prefixed bus id
       expect(toml).not.toContain("pty send"); // poker gone
       expect(toml).not.toContain("--resume"); // cold start
     } finally {
@@ -83,12 +83,12 @@ describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
     try {
       writePtyToml(dir, spec({ networkRoot: "/net/convoy" }));
       const toml = readFileSync(join(dir, ".convoy", "pty.toml"), "utf8");
-      // ding command carries --root so a pty-restart can't drop the root
-      expect(toml).toContain("st ding silber.convoy --identity convoy-claude --root /net/convoy");
+      // ding command carries --root (the bus root = <net>/smalltalk) so a pty-restart can't drop it
+      expect(toml).toContain("st ding silber.convoy --identity silber.convoy-claude --root /net/convoy/smalltalk");
       // --root is a ding-only concern; the harness (claude) command must not get it
       expect(toml).not.toContain("exec claude --permission-mode bypassPermissions --root");
-      // env still carries ST_ROOT too (belt-and-suspenders)
-      expect(toml).toContain('ST_ROOT = "/net/convoy"');
+      // env carries ST_ROOT = the bus root (<net>/smalltalk), not the network dir
+      expect(toml).toContain('ST_ROOT = "/net/convoy/smalltalk"');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -139,7 +139,7 @@ describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
       expect(toml).not.toContain("[sessions.claude]");
       expect(toml).not.toContain("exec claude");
       expect(toml).toContain('id = "silber.vauban"'); // agentShort strips the -codex suffix
-      expect(toml).toContain("st ding silber.vauban --identity vauban-codex"); // ding sidecar present
+      expect(toml).toContain("st ding silber.vauban --identity silber.vauban-codex"); // host-prefixed bus id
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
