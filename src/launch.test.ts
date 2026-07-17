@@ -312,7 +312,7 @@ describe("writeContextFiles — clean-worktree wiring (convoy must not dirty a r
     };
   }
 
-  it("writes the overlay into .convoy/, wires @imports via root CLAUDE.local.md, NEVER touches a tracked CLAUDE.md, and excludes .convoy/", () => {
+  it("writes the overlay into .convoy/, wires @imports via .claude/rules/convoy.md, leaves the root pristine, and excludes both", () => {
     const dir = mkdtempSync(join(tmpdir(), "convoy-ctx-"));
     try {
       mkdirSync(join(dir, ".git", "info"), { recursive: true }); // pose as a git repo (no git binary needed)
@@ -328,15 +328,17 @@ describe("writeContextFiles — clean-worktree wiring (convoy must not dirty a r
       // the overlay content lives in .convoy/, NOT the repo root
       expect(readFileSync(join(dir, ".convoy", "PERSONA.md"), "utf8")).toBe("# worker persona\n");
       expect(existsSync(join(dir, ".convoy", "DING-BUS.md"))).toBe(true);
-      expect(existsSync(join(dir, "PERSONA.md"))).toBe(false); // never at the root
-      // the loader (root CLAUDE.local.md) @imports the .convoy/ content
-      const local = readFileSync(join(dir, "CLAUDE.local.md"), "utf8");
-      expect(local).toContain("@.convoy/PERSONA.md");
-      expect(local).toContain("@.convoy/DING-BUS.md");
-      // the whole .convoy/ overlay + the loader are kept out of git
+      // the root is pristine — no scattered convoy files (loader is a dot-dir file)
+      expect(existsSync(join(dir, "PERSONA.md"))).toBe(false);
+      expect(existsSync(join(dir, "CLAUDE.local.md"))).toBe(false);
+      // the loader (.claude/rules/convoy.md) @imports the .convoy/ content (relative to the rules file)
+      const loader = readFileSync(join(dir, ".claude", "rules", "convoy.md"), "utf8");
+      expect(loader).toContain("@../../.convoy/PERSONA.md");
+      expect(loader).toContain("@../../.convoy/DING-BUS.md");
+      // both the .convoy/ overlay and the loader are kept out of git
       const exclude = readFileSync(join(dir, ".git", "info", "exclude"), "utf8");
       expect(exclude).toContain(".convoy/");
-      expect(exclude).toContain("CLAUDE.local.md");
+      expect(exclude).toContain(".claude/rules/convoy.md");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -350,31 +352,29 @@ describe("writeContextFiles — clean-worktree wiring (convoy must not dirty a r
       writeFileSync(personaPath, "# p\n");
       writeContextFiles(dir, makeSpec(dir, personaPath));
       writeContextFiles(dir, makeSpec(dir, personaPath));
-      const local = readFileSync(join(dir, "CLAUDE.local.md"), "utf8");
-      expect(local.match(/@\.convoy\/PERSONA\.md/g)?.length).toBe(1);
-      expect(local.match(/@\.convoy\/DING-BUS\.md/g)?.length).toBe(1);
+      const loader = readFileSync(join(dir, ".claude", "rules", "convoy.md"), "utf8");
+      expect(loader.match(/@\.\.\/\.\.\/\.convoy\/PERSONA\.md/g)?.length).toBe(1);
+      expect(loader.match(/@\.\.\/\.\.\/\.convoy\/DING-BUS\.md/g)?.length).toBe(1);
       const exclude = readFileSync(join(dir, ".git", "info", "exclude"), "utf8");
       expect(exclude.match(/^\.convoy\/$/gm)?.length).toBe(1);
+      expect(exclude.match(/^\.claude\/rules\/convoy\.md$/gm)?.length).toBe(1);
       expect(exclude.match(/agent context \(local/g)?.length).toBe(1); // single marker
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("does not double-load: an import already in a tracked CLAUDE.md is not re-added to CLAUDE.local.md", () => {
-    const dir = mkdtempSync(join(tmpdir(), "convoy-ctx-migrate-"));
+  it("append-only: preserves a user's existing .claude/rules/convoy.md content", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-ctx-preexisting-"));
     try {
-      mkdirSync(join(dir, ".git", "info"), { recursive: true });
+      mkdirSync(join(dir, ".claude", "rules"), { recursive: true });
+      writeFileSync(join(dir, ".claude", "rules", "convoy.md"), "# my own note\nkeep me\n");
       const personaPath = join(dir, "persona-src.md");
       writeFileSync(personaPath, "# p\n");
-      // a user's tracked CLAUDE.md that already @imports the overlay
-      writeFileSync(join(dir, "CLAUDE.md"), "# proj\n@.convoy/PERSONA.md\n@.convoy/DING-BUS.md\n");
       writeContextFiles(dir, makeSpec(dir, personaPath));
-      // no CLAUDE.local.md needed — both imports are already loaded via CLAUDE.md
-      expect(existsSync(join(dir, "CLAUDE.local.md"))).toBe(false);
-      // but the .convoy/ overlay is still swept out of git status
-      const exclude = readFileSync(join(dir, ".git", "info", "exclude"), "utf8");
-      expect(exclude).toContain(".convoy/");
+      const loader = readFileSync(join(dir, ".claude", "rules", "convoy.md"), "utf8");
+      expect(loader).toContain("keep me"); // user content preserved
+      expect(loader).toContain("@../../.convoy/PERSONA.md"); // convoy imports appended
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -402,7 +402,7 @@ describe("writeContextFiles — clean-worktree wiring (convoy must not dirty a r
       const personaPath = join(dir, "persona-src.md");
       writeFileSync(personaPath, "# p\n");
       writeContextFiles(dir, makeSpec(dir, personaPath));
-      expect(existsSync(join(dir, "CLAUDE.local.md"))).toBe(true);
+      expect(existsSync(join(dir, ".claude", "rules", "convoy.md"))).toBe(true);
       expect(existsSync(join(dir, ".git"))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -466,16 +466,17 @@ describe("convoy add clean-worktree — pty.toml + settings + context, EVERY aut
       git("commit", "-qm", "init");
       // compose the agent in
       writeAgentFiles(repo, spec(repo, persona, netRoot));
-      // convoy really did write its files — into .convoy/ (+ the loader + hooks)…
+      // convoy really did write its files — into .convoy/ + the .claude/ dot-dir…
       expect(existsSync(join(repo, ".convoy", "pty.toml"))).toBe(true);
       expect(existsSync(join(repo, ".convoy", "PERSONA.md"))).toBe(true);
       expect(existsSync(join(repo, ".convoy", "DING-BUS.md"))).toBe(true);
-      expect(existsSync(join(repo, "CLAUDE.local.md"))).toBe(true);
+      expect(existsSync(join(repo, ".claude", "rules", "convoy.md"))).toBe(true);
       expect(existsSync(join(repo, ".claude", "settings.local.json"))).toBe(true);
-      // …the product-repo ROOT is pristine — no scattered convoy files at the root…
+      // …the product-repo ROOT is pristine — ZERO visible convoy files at the root…
       expect(existsSync(join(repo, "pty.toml"))).toBe(false);
       expect(existsSync(join(repo, "PERSONA.md"))).toBe(false);
       expect(existsSync(join(repo, "DING-BUS.md"))).toBe(false);
+      expect(existsSync(join(repo, "CLAUDE.local.md"))).toBe(false);
       // …and the tracked CLAUDE.md is untouched
       expect(readFileSync(join(repo, "CLAUDE.md"), "utf8")).toBe("# project rules\n");
       // THE acceptance: the worktree is clean

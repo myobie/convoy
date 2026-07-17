@@ -255,12 +255,12 @@ function excludeFromGit(dir: string, names: string[]): void {
 }
 
 /** Install the persona + ding-bus instructions into the workspace's `.convoy/` overlay dir (moved OUT
- *  of the repo root, so the product repo stays pristine), and wire their `@`-imports through a loader
- *  Claude Code auto-loads. Loader = the workspace-root `CLAUDE.local.md` (Nathan-approved): Claude
- *  auto-loads it (empirically verified), it's git-excluded so the root stays git-CLEAN, and we
- *  APPEND-ONLY — never clobber a user's own CLAUDE.local.md, and skip an import already present (in the
- *  loader or a tracked CLAUDE.md) so the persona is never double-loaded. The whole `.convoy/` dir + the
- *  loader are kept out of `git status` via .git/info/exclude. */
+ *  of the repo root so the product repo stays pristine), and wire their `@`-imports through a loader
+ *  Claude Code auto-loads. Loader = `.claude/rules/convoy.md` (cos/Nathan decision): Claude auto-loads
+ *  `.claude/rules/*.md` (empirically verified), it's a DISTINCT file so it never clobbers a repo's own
+ *  `.claude/CLAUDE.md` or rules, and it `@`-imports the `.convoy/` content (path is relative to the
+ *  rules file: `../../.convoy/…`). Result: the workspace ROOT has ZERO visible convoy files — only the
+ *  `.claude/` + `.convoy/` dot-dirs, both git-excluded. Append-only (never clobber a user's file). */
 export function writeContextFiles(dir: string, spec: AgentSpec): void {
   const convoyDir = join(dir, CONVOY_DIR);
   const imports: string[] = [];
@@ -269,29 +269,26 @@ export function writeContextFiles(dir: string, spec: AgentSpec): void {
   if (persona && existsSync(persona)) {
     mkdirSync(convoyDir, { recursive: true });
     writeFileSync(join(convoyDir, "PERSONA.md"), readFileSync(persona, "utf8"));
-    imports.push(`@${CONVOY_DIR}/PERSONA.md`);
+    imports.push(`@../../${CONVOY_DIR}/PERSONA.md`);
   }
   if (usesDing(spec)) {
     mkdirSync(convoyDir, { recursive: true });
     writeFileSync(join(convoyDir, "DING-BUS.md"), DING_BUS_MD);
-    imports.push(`@${CONVOY_DIR}/DING-BUS.md`);
+    imports.push(`@../../${CONVOY_DIR}/DING-BUS.md`);
   }
 
-  // Loader: the root CLAUDE.local.md, @importing the .convoy/ content. Append-only + no-double-load.
-  const claudeMd = join(dir, "CLAUDE.md");
-  const claudeMdContent = existsSync(claudeMd) ? readFileSync(claudeMd, "utf8") : "";
-  const localMd = join(dir, "CLAUDE.local.md");
-  const localContent = existsSync(localMd) ? readFileSync(localMd, "utf8") : "";
-  const missing = imports.filter((i) => !localContent.includes(i) && !claudeMdContent.includes(i));
+  // Loader: .claude/rules/convoy.md — @imports the .convoy/ content. Append-only + no-double-load.
+  const rulesFile = join(dir, ".claude", "rules", "convoy.md");
+  const existing = existsSync(rulesFile) ? readFileSync(rulesFile, "utf8") : "";
+  const missing = imports.filter((i) => !existing.includes(i));
   if (missing.length > 0) {
-    const sep = localContent && !localContent.endsWith("\n") ? "\n" : "";
-    writeFileSync(localMd, `${localContent}${sep}${missing.join("\n")}\n`);
+    mkdirSync(dirname(rulesFile), { recursive: true });
+    const sep = existing && !existing.endsWith("\n") ? "\n" : "";
+    writeFileSync(rulesFile, `${existing}${sep}${missing.join("\n")}\n`);
   }
 
-  // Keep the whole .convoy/ overlay + the loader out of `git status`.
-  const authored: string[] = [`${CONVOY_DIR}/`];
-  if (existsSync(localMd)) authored.push("CLAUDE.local.md");
-  excludeFromGit(dir, authored);
+  // Keep the whole .convoy/ overlay + the loader (a distinct file, NOT the repo's own rules) out of git.
+  excludeFromGit(dir, [`${CONVOY_DIR}/`, ".claude/rules/convoy.md"]);
 }
 
 /** Write ALL of convoy's agent wiring into the repo `dir` — the persona/ding context files
