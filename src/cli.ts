@@ -125,7 +125,7 @@ function printHelp(): void {
       "SUBCOMMANDS:\n" +
       "  ls (default)   list the convoy's members [--tree = spawn-parentage tree + cross-machine liveness (synced status-mtime + host) --stale-after <ms> --live-only --json --network]\n" +
       "  doctor         setup-readiness suite: prove your setup can do real agent work [--quick = preflight only; --full = real CoS→sup→worker org proof (slower)]\n" +
-      "  init [name|dir] create + wire a network (auto-clones personas); a bare NAME lives at <home>/<name>, a path is used as-is\n" +
+      "  init [name|dir] create + wire a network (auto-clones personas); a bare NAME lives at <home>/<name>, a path is used as-is [--megarepo <path> = agents cut worktrees off it]\n" +
       "  add <role>     add an agent (correct-by-construction) [--identity --harness claude|codex --transport ding|mcp --mcp --network --dir --persona --permanent --prefix --config-dir --dry-run --force]\n" +
       "  cos --repo <d> bootstrap a Chief of Staff\n" +
       "  up <network>   host a network in the foreground (TCC anchor + supervisor + flapping-cap)\n" +

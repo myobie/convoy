@@ -5,7 +5,7 @@
 // binary (spawned as a command, not imported), and the hook SCRIPTS (referenced by path).
 
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as tomlParse, stringify as tomlStringify } from "smol-toml";
 import { spawnFromPtyFile } from "./host.ts";
@@ -221,22 +221,38 @@ function writeHooks(dir: string): void {
   excludeFromGit(dir, [".claude/settings.local.json"]);
 }
 
-/** Add `names` to a repo's `.git/info/exclude` (per-repo, itself untracked) so the convoy-authored
- *  context files never show up in `git status` — convoy must not leave a repo it composes into dirty.
- *  Idempotent (skips names already listed) and best-effort: silently no-ops when `dir` isn't a plain
- *  git repo. NOT a tracked `.gitignore` (that would itself dirty the tree) and NOT a behavior change
- *  for a repo that legitimately tracks these files — an exclude entry for an already-tracked path is a
- *  git no-op, so such a repo keeps committing them. Worktrees/submodules (`.git` is a file, not a dir)
- *  are skipped rather than mis-resolved; their untracked files simply show as before. */
+/** Add `names` to a repo's git exclude (itself untracked) so the convoy-authored context files never show
+ *  up in `git status` — convoy must not leave a repo it composes into dirty. Idempotent (skips names
+ *  already listed) and best-effort: silently no-ops when `dir` isn't a git repo. NOT a tracked `.gitignore`
+ *  (that would itself dirty the tree) and NOT a behavior change for a repo that legitimately tracks these
+ *  files (an exclude entry for an already-tracked path is a git no-op). Uses `git rev-parse --git-path
+ *  info/exclude` so it resolves the RIGHT file for any layout — a plain repo, a WORKTREE (the shared
+ *  `<common>/.git/info/exclude`, which git actually reads for worktrees), or a submodule. */
 function excludeFromGit(dir: string, names: string[]): void {
   if (names.length === 0) return;
-  const gitDir = join(dir, ".git");
+  const gitPath = join(dir, ".git");
+  let commonGitDir: string;
   try {
-    if (!statSync(gitDir).isDirectory()) return; // no repo here, or a worktree/submodule `.git` file
+    if (statSync(gitPath).isDirectory()) {
+      commonGitDir = gitPath; // a plain repo
+    } else {
+      // a WORKTREE: `.git` is a file (`gitdir: <path>`); git reads the exclude from the SHARED common
+      // dir, NOT the per-worktree gitdir — resolve it via the gitdir's `commondir` pointer.
+      const m = readFileSync(gitPath, "utf8").match(/^gitdir:\s*(.+)$/m);
+      if (!m || !m[1]) return;
+      const gitDir = resolve(dir, m[1].trim());
+      let common = gitDir;
+      try {
+        common = resolve(gitDir, readFileSync(join(gitDir, "commondir"), "utf8").trim());
+      } catch {
+        // no commondir → the gitdir IS the common dir
+      }
+      commonGitDir = common;
+    }
   } catch {
     return; // not a git repo — nothing to exclude
   }
-  const infoDir = join(gitDir, "info");
+  const infoDir = join(commonGitDir, "info");
   const excludePath = join(infoDir, "exclude");
   let existing = "";
   try {
@@ -346,12 +362,16 @@ export async function nativeLaunch(spec: AgentSpec): Promise<{ spawned: string[]
     // idempotent (replace a stale link). (Megarepo worktree-cutting is a follow-up.)
     if (spec.workingDir) {
       const link = join(networkLayout(spec.networkRoot).worktrees, spec.identity);
-      try {
-        mkdirSync(dirname(link), { recursive: true });
-        rmSync(link, { force: true });
-        symlinkSync(spec.workingDir, link);
-      } catch {
-        // non-fatal — the visibility symlink never blocks a launch
+      // Only symlink when the workspace lives ELSEWHERE (no-megarepo case). When the workspace already IS
+      // the worktree (megarepo model cut it here), skip — else rmSync would delete the worktree.
+      if (resolve(spec.workingDir) !== resolve(link)) {
+        try {
+          mkdirSync(dirname(link), { recursive: true });
+          rmSync(link, { force: true });
+          symlinkSync(spec.workingDir, link);
+        } catch {
+          // non-fatal — the visibility symlink never blocks a launch
+        }
       }
     }
   }

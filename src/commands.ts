@@ -485,10 +485,22 @@ export async function cmdInstallCli(args: string[]): Promise<number> {
 }
 
 export async function cmdInit(args: string[]): Promise<number> {
-  const badFlag = unknownFlag(args, ["--no-channel"], []);
+  const badFlag = unknownFlag(args, ["--no-channel"], ["--megarepo"]);
   if (badFlag) {
     err(`unrecognized flag "${badFlag}" for \`convoy init\`. See \`convoy init --help\`.`);
     return 2;
+  }
+  // --megarepo <path>: the repo agents cut worktrees off (recorded in the network config). Validate it's
+  // a git repo up front so a typo fails at init, not cryptically at the first `convoy add`.
+  let megarepo: string | undefined;
+  const megarepoArg = optValue(args, "--megarepo");
+  if (megarepoArg) {
+    const abs = resolve(expandTilde(megarepoArg));
+    if (!existsSync(join(abs, ".git"))) {
+      err(`--megarepo ${abs} is not a git repo (no .git). Point it at a git checkout, or omit it (agents symlink their own repo).`);
+      return 1;
+    }
+    megarepo = abs;
   }
   // No dir + no ST_ROOT → convoy's OWN default network (get-started-with-zero-config); an explicit dir or
   // ambient ST_ROOT still wins. Idempotent: the default usually already exists (it's where the live network
@@ -513,7 +525,9 @@ export async function cmdInit(args: string[]): Promise<number> {
   // Record the network config artifact (<net>/convoy.toml) so add/up/doctor stay consistent and the
   // user has one reviewable record. Preserve an existing megarepo entry across a re-init.
   const priorCfg = readNetworkConfig(dir);
-  writeNetworkConfig(dir, { name: networkNameFromDir(dir), ...(priorCfg?.megarepo ? { megarepo: priorCfg.megarepo } : {}) });
+  const effectiveMegarepo = megarepo ?? priorCfg?.megarepo; // new --megarepo wins; else preserve across re-init
+  writeNetworkConfig(dir, { name: networkNameFromDir(dir), ...(effectiveMegarepo ? { megarepo: effectiveMegarepo } : {}) });
+  if (megarepo) out(`  megarepo ${megarepo} (agents cut worktrees off it)`);
   const stArgs = ["init", layout.stRoot];
   if (hasFlag(args, "--no-channel")) stArgs.push("--no-channel");
   const r = await run("st", stArgs);
@@ -554,6 +568,17 @@ export async function cmdPersonas(args: string[]): Promise<number> {
   return 2;
 }
 
+/** Cut a git worktree off `megarepo` at `path` on branch `convoy/<identity>`. Idempotent — a no-op if the
+ *  worktree dir already exists (so a re-add doesn't fail). Returns the branch name, or an actionable error. */
+export async function cutWorktree(megarepo: string, path: string, identity: string): Promise<{ ok: true; branch: string } | { ok: false; error: string }> {
+  const branch = `convoy/${identity}`;
+  if (existsSync(path)) return { ok: true, branch }; // already cut — reuse it
+  mkdirSync(dirname(path), { recursive: true });
+  const r = await run("git", ["-C", megarepo, "worktree", "add", "-B", branch, path]);
+  if (!r.ok) return { ok: false, error: `git worktree add off ${megarepo} failed: ${r.stderr.trim() || r.stdout.trim()}` };
+  return { ok: true, branch };
+}
+
 export async function cmdAdd(args: string[]): Promise<number> {
   const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run", "--force"], ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--prefix", "--config-dir"]);
   if (bad) {
@@ -585,14 +610,32 @@ export async function cmdAdd(args: string[]): Promise<number> {
     err(`unknown transport. Valid: ding, mcp`);
     return 2;
   }
+  const network = resolveNetworkRoot(optValue(args, "--network"));
+  let workingDir = optValue(args, "--dir");
+  // Megarepo model: with no explicit --dir and a megarepo configured for this network, cut a git worktree
+  // off it into <net>/worktrees/<id> — the agent works THERE (a dedicated worktree, never the user's
+  // arbitrary checkout). --dir always overrides.
+  if (!workingDir) {
+    const cfg = readNetworkConfig(network);
+    if (cfg?.megarepo) {
+      const wt = join(networkLayout(network).worktrees, identity);
+      const cut = await cutWorktree(cfg.megarepo, wt, identity);
+      if (!cut.ok) {
+        err(cut.error);
+        return 1;
+      }
+      workingDir = wt;
+      out(`  worktree ${wt} (off megarepo ${cfg.megarepo}, branch ${cut.branch})`);
+    }
+  }
   const spec: AgentSpec = {
     harness: harnessRaw as Harness,
     role,
     identity,
     transport,
-    networkRoot: resolveNetworkRoot(optValue(args, "--network")),
+    networkRoot: network,
     personaOverride: optValue(args, "--persona"),
-    workingDir: optValue(args, "--dir"),
+    workingDir,
     permanentOverride: hasFlag(args, "--permanent") ? true : null,
     prefix: optValue(args, "--prefix"),
     configDir: optValue(args, "--config-dir"),
