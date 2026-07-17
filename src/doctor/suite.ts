@@ -250,6 +250,17 @@ async function sendFromHarness(box: Sandbox, toId: string, body: string): Promis
   return { ok: r.ok, stderr: r.stderr };
 }
 
+/** A STABLE, greppable one-line gate summary for the --full org proof, emitted to stderr as a `[full-org] GATE …`
+ *  note. Lets an eval (or a human) HARD-gate on the DETERMINISTIC org-proof core — g1 (CoS hands-off boot) +
+ *  cos_sup + sup_wk + graded_fix — and read the non-deterministic restart-straddle ADVISORY, independent of
+ *  prose wording and of the straddle-coupled rc/headline (a straddle flake fails the whole check → rc=1, so
+ *  rc/headline can't be a stable gate; this line can). Values are pass|fail; straddle is also `skip` when there
+ *  was no committed fix to restart onto. Emitted at the G1 early-return AND once all gates are decided. */
+export function fullOrgGateLine(g: { g1: boolean; cosSup: boolean; supWk: boolean; gradedFix: boolean; straddle: boolean | null }): string {
+  const v = (b: boolean): string => (b ? "pass" : "fail");
+  return `GATE g1=${v(g.g1)} cos_sup=${v(g.cosSup)} sup_wk=${v(g.supWk)} graded_fix=${v(g.gradedFix)} straddle=${g.straddle === null ? "skip" : v(g.straddle)}`;
+}
+
 /** Poll `fn` until it returns true or the timeout elapses. (Normal runtime — Date.now/setTimeout are fine.) */
 async function pollUntil(fn: () => Promise<boolean>, timeoutMs: number, intervalMs = 3000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
@@ -689,7 +700,10 @@ export async function checkFullOrg(): Promise<CheckResult> {
 
     // G1 — hands-off bring-up: the CoS boots to available with NO trust prompt + NO interview stall.
     const cosUp = await pollUntil(async () => (await runSt(box, ["status", busId("doctor-cos")])).stdout.trim() === "available", 180_000);
-    if (!cosUp) return { name, pass: false, detail: "the real CoS never reached available (didn't boot hands-off)", fix: "the CoS stalled on boot — likely the first-run interview didn't skip (check the pre-seeded identity.md `name:`) or a workspace-trust prompt; verify claude auth (`/login`) + `convoy doctor --quick`" };
+    if (!cosUp) {
+      note(fullOrgGateLine({ g1: false, cosSup: false, supWk: false, gradedFix: false, straddle: null }));
+      return { name, pass: false, detail: "the real CoS never reached available (didn't boot hands-off)", fix: "the CoS stalled on boot — likely the first-run interview didn't skip (check the pre-seeded identity.md `name:`) or a workspace-trust prompt; verify claude auth (`/login`) + `convoy doctor --quick`" };
+    }
     note("CoS available (hands-off boot ✓) — seeding the kick");
 
     // Seed ONE unambiguous kick. Prescriptive on MECHANICS (identities, dirs, exact commands) so the only
@@ -773,6 +787,19 @@ export async function checkFullOrg(): Promise<CheckResult> {
         note(`restart-continuity: reconstructed=${restartOk} straddled=${straddled}`);
       }
     }
+
+    // STABLE gate line — all gates now decided. g1 is pass here (a G1 fail returned early above). graded_fix is
+    // the FULL G3 validity (committed + mutation-valid grader + touched src/). straddle: skip if no committed
+    // fix to restart onto, else pass only if reconstructed AND straddled the restart epoch.
+    note(
+      fullOrgGateLine({
+        g1: true,
+        cosSup: cosToSup,
+        supWk: supToWk,
+        gradedFix: committedFix && detectsBug && touchedSrc,
+        straddle: restartOk === null ? null : restartOk === true && straddled,
+      }),
+    );
 
     const gaps: string[] = [];
     if (!cosToSup) gaps.push("G2: no delegation from the CoS to a supervisor on the bus (the CoS didn't stand up + brief a supervisor)");
