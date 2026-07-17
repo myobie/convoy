@@ -78,7 +78,11 @@ export function parseAgentFile(text: string): AgentFile {
 
   const af: AgentFile = { identity, role };
   const host = str("host");
-  if (host) af.host = host;
+  // LOWERCASE the host on read: `convoy up`'s host-filter compares against `shortHostname()` (lowercased), and
+  // the bus id / bus folder are `<host>.<identity>` (lowercased). A hand-authored capitalized host (e.g. from
+  // `hostname -s` → "Silber") would otherwise SILENTLY never match this machine → the agent never launches, no
+  // error. Normalizing here keeps host-filter + bus-id + bus-folder consistent for hand-authored files too.
+  if (host) af.host = host.toLowerCase();
   const workspace = str("workspace");
   if (workspace) af.workspace = workspace;
   if (harnessRaw) af.harness = harnessRaw as Harness;

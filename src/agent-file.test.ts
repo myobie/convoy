@@ -29,6 +29,10 @@ strategy  = "permanent"
     expect(parseAgentFile(`identity = "wk"\nrole = "worker"\n`)).toEqual({ identity: "wk", role: "worker" });
   });
 
+  it("LOWERCASES a hand-authored capitalized host (else it silently never matches the host-filter)", () => {
+    expect(parseAgentFile(`identity="wk"\nrole="worker"\nhost="Silber"\n`).host).toBe("silber");
+  });
+
   it("throws on a missing required field", () => {
     expect(() => parseAgentFile(`role = "worker"\n`)).toThrow(/identity/);
     expect(() => parseAgentFile(`identity = "wk"\n`)).toThrow(/role/);
