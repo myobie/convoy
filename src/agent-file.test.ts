@@ -46,6 +46,14 @@ strategy  = "permanent"
     expect(af.tier).toBe("cos");
     expect(af.env).toEqual({ FOO: "bar" });
   });
+
+  it("parses + round-trips the retired lifecycle marker (decommission = edit, not delete)", () => {
+    const af = parseAgentFile(`identity="w"\nrole="worker"\nstrategy="permanent"\nretired=true\n`);
+    expect(af.retired).toBe(true);
+    expect(af.strategy).toBe("permanent"); // orthogonal — "a retired permanent" is expressible
+    expect(parseAgentFile(agentFileToToml(af))).toEqual(af);
+    expect(parseAgentFile(`identity="w"\nrole="worker"\n`).retired).toBeUndefined();
+  });
 });
 
 describe("agentFileToSpec — compile intent → AgentSpec", () => {

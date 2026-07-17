@@ -32,6 +32,13 @@ export interface AgentFile {
   persona?: string;
   /** Optional supervision strategy — "permanent" (respawned by `convoy up`, piece 3). Omit → derive from role. */
   strategy?: "permanent";
+  /** Lifecycle marker: `retired = true` DECOMMISSIONS the agent. Because the catalog syncs UNION/no-delete (a
+   *  local `rm` just re-propagates from a peer), removal is an EDIT, not a file delete — set retired=true and
+   *  the union-sync carries it (newer-wins) everywhere; `convoy up` reconcile (piece 3) then tears the agent
+   *  down + does NOT launch it. A SEPARATE axis from `strategy` (respawn behavior) so "a retired permanent" is
+   *  expressible + reconcile reads two orthogonal signals. Forward-compat here (parsed + serialized); honored
+   *  by reconcile in piece 3. Decided with cos + smalltalk as the catalog's cross-machine removal semantics. */
+  retired?: boolean;
   /** Forward-compat: crash-ding tier. v1 derives it from role (chief-of-staff → cos); carried for piece 2/3. */
   tier?: string;
   /** Forward-compat: extra harness env. Carried in the schema; v1 render does NOT yet inject it into pty.toml. */
@@ -81,6 +88,7 @@ export function parseAgentFile(text: string): AgentFile {
   if (strategyRaw) af.strategy = "permanent";
   const tier = str("tier");
   if (tier) af.tier = tier;
+  if (doc["retired"] === true) af.retired = true;
   if (doc["env"] && typeof doc["env"] === "object") af.env = doc["env"] as Record<string, string>;
   return af;
 }
@@ -97,6 +105,7 @@ export function agentFileToToml(af: AgentFile): string {
   if (af.persona) doc["persona"] = af.persona;
   if (af.strategy) doc["strategy"] = af.strategy;
   if (af.tier) doc["tier"] = af.tier;
+  if (af.retired) doc["retired"] = true;
   if (af.env && Object.keys(af.env).length > 0) doc["env"] = af.env;
   return tomlStringify(doc);
 }
