@@ -680,6 +680,39 @@ export async function checkFullOrg(): Promise<CheckResult> {
   const cosRepo = join(box.sb, "doctor-cos");
   const supDir = join(box.sb, "doctor-sup");
   const workerRepo = join(box.sb, "doctor-wk");
+
+  // Abort trap — a SIGTERM (CI/timeout guard) or SIGINT (ctrl-c) kills the process mid-run, SKIPPING the finally
+  // teardown, so the sandbox org (CoS + supervisor + worker + their ding sidecars) keeps running = a leaked org
+  // (the exact stragglers that pile up from timed-out/interrupted --full runs). This tears the org down before
+  // exiting. teardownSandbox runs `convoy down`, which reaps each agent AND its .ding sidecar (verified) — so it
+  // closes BOTH the agent-leak and the ding-leak on abort. Best-effort + async; a second signal still hard-kills.
+  const teardownOnce = { done: false };
+  const doTeardown = async (): Promise<void> => {
+    if (teardownOnce.done) return; // the abort handler + the finally must not double-teardown
+    teardownOnce.done = true;
+    if (up) await up.stop();
+    await teardownSandbox(box, [cosRepo, supDir, workerRepo]);
+    // Sweep the sandbox dir too, so the ABORT path fully matches normal completion (on a clean finish
+    // runFullOrgSuite's sweepSandboxes() rm's it AFTER this returns; process.exit(130) on abort skips that).
+    try {
+      rmSync(box.sb, { recursive: true, force: true });
+    } catch {
+      // best-effort dir sweep
+    }
+  };
+  const onAbort = (sig: NodeJS.Signals): void => {
+    note(`${sig} received — tearing down the sandbox org before exit so it doesn't leak…`);
+    void (async () => {
+      try {
+        await doTeardown();
+      } catch {
+        // best-effort on abort
+      }
+      process.exit(130);
+    })();
+  };
+  process.once("SIGTERM", onAbort);
+  process.once("SIGINT", onAbort);
   try {
     const init = await runConvoy(box, ["init", box.net, "--no-channel"]);
     if (!init.ok) return { name, pass: false, detail: `convoy init failed: ${init.stderr.trim() || init.stdout.trim()}`, fix: "run `convoy doctor --quick`" };
@@ -859,11 +892,13 @@ export async function checkFullOrg(): Promise<CheckResult> {
         : undefined,
     };
   } finally {
-    if (up) await up.stop(); // stop hosting (agents detach + keep running) before teardown tears them down
-    // teardownSandbox kills the agents THEN cleans up the trust entries doctor wrote for these ephemeral sandbox
-    // dirs (claude's ~/.claude.json + codex's ~/.codex/config.toml) — after-kill so no live Claude re-adds them,
-    // before-rm so the realpath trust key still resolves. Best-effort; the gate also tolerates any /cvd- residue.
-    await teardownSandbox(box, [cosRepo, supDir, workerRepo]);
+    process.removeListener("SIGTERM", onAbort);
+    process.removeListener("SIGINT", onAbort);
+    // doTeardown: up.stop() (stop hosting — agents detach) THEN teardownSandbox (kills the agents + their .ding
+    // sidecars THEN cleans up the trust entries doctor wrote for these ephemeral sandbox dirs — after-kill so no
+    // live Claude re-adds them, before-rm so the realpath trust key still resolves). Idempotent via teardownOnce
+    // so the abort handler + this finally never double-run. Best-effort; the gate also tolerates any /cvd- residue.
+    await doTeardown();
   }
 }
 
