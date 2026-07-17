@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, watch, type FSWatcher } from "node
 import { dirname, join } from "node:path";
 import { run } from "./exec.ts";
 import { pretrustDirs, pretrustDirsCodex } from "./trust.ts";
-import { defaultConvoyNetwork, isNetworkName, networkDirForName, stRootOf } from "./paths.ts";
+import { defaultConvoyNetwork, isNetworkName, networkDirForName, networkDirOfStRoot, stRootOf } from "./paths.ts";
 import {
   classify,
   effectiveLimit,
@@ -122,11 +122,17 @@ async function sendDing(root: string, to: string, subject: string, body: string)
   }
 }
 
-/** up/down's network fallback: prefer CONVOY_NETWORK (set by `convoy env`/`shell`), else legacy ambient
- *  ST_ROOT, else convoy's OWN default network (not st/pty's global ~/.local/state/smalltalk root — the
- *  ST_ROOT-unset footgun). Used only when no explicit `up/down <network>` arg is given. */
+/** up/down's network fallback: prefer CONVOY_NETWORK (the network dir, set by `convoy env`/`shell`), else
+ *  legacy ambient ST_ROOT, else convoy's OWN default network (not st/pty's global ~/.local/state/smalltalk
+ *  root — the ST_ROOT-unset footgun). Used only when no explicit `up/down <network>` arg is given. ST_ROOT
+ *  is the BUS root (`<net>/smalltalk`), so recover the network dir via networkDirOfStRoot — else up/down
+ *  would target `<net>/smalltalk` as the network and read the catalog/pty from the wrong (bus-root) subtree
+ *  (the same footgun as `convoy add`; CONVOY_NETWORK usually masks it, but not when only ST_ROOT is set). */
 function defaultRoot(): string {
-  return process.env["CONVOY_NETWORK"] ?? process.env["ST_ROOT"] ?? defaultConvoyNetwork();
+  const cn = process.env["CONVOY_NETWORK"];
+  if (cn) return cn;
+  const st = process.env["ST_ROOT"];
+  return st ? networkDirOfStRoot(st) : defaultConvoyNetwork();
 }
 
 /** Resolve up/down's `<network>` arg to a network DIR — a bare NAME (`default`, `my-net`) resolves under

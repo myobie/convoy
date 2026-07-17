@@ -4,7 +4,8 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentForest, checkPtyRoot, existingPtyTomlIdentity, formatActivityAge, hostPrefixedIdentity, networkEnvExports, optValue, pathTooLongMessage, positionals, PTY_ROOT_MAX_BYTES, readAgentPresence, renderForest, resolveNetworkEnv, resolveNetworkRoot, shellQuote, shortHost, unknownFlag, type LocalInfo } from "./commands.ts";
 import { shortHostname } from "./agent-spec.ts";
-import { convoyHome, defaultConvoyNetwork, isNetworkName, networkDirForName } from "./paths.ts";
+import { convoyHome, defaultConvoyNetwork, isNetworkName, networkDirForName, networkDirOfStRoot } from "./paths.ts";
+import { agentFilePath, catalogDir } from "./agent-file.ts";
 import type { Agent } from "./bus.ts";
 
 describe("arg parsing: --flag=value form (silent-default trap)", () => {
@@ -57,6 +58,37 @@ describe("resolveNetworkRoot (no-leak: pty scope follows the bus scope)", () => 
   it("falls back to the convoy DEFAULT when neither --network nor ST_ROOT is set (its own default, not st's global root)", () => {
     delete process.env["ST_ROOT"];
     expect(resolveNetworkRoot(null)).toBe(defaultConvoyNetwork());
+  });
+
+  // The footgun (cos, cross-machine demo): ST_ROOT is the BUS root (`<net>/smalltalk`), the STANDARD ambient
+  // value every agent carries. Falling back to it verbatim made resolveNetworkRoot return the bus root as the
+  // network dir, so `convoy add` wrote the catalog under `<net>/smalltalk/catalog/` (unsynced) — silently
+  // never syncing/launching. The fallback now strips the trailing `smalltalk` to recover `<net>`.
+  it("strips the bus-root `smalltalk` segment: ST_ROOT=<net>/smalltalk falls back to <net>, not the bus root", () => {
+    process.env["ST_ROOT"] = "/home/state/convoy/default/smalltalk";
+    expect(resolveNetworkRoot(null)).toBe("/home/state/convoy/default");
+  });
+
+  it("ACCEPTANCE (exact repro): with ST_ROOT=<net>/smalltalk, `convoy add`'s catalog path lands in <net>/catalog/, NOT <net>/smalltalk/catalog/", () => {
+    // cmdAdd computes `agentFilePath(catalogDir(resolveNetworkRoot(--network)), identity)`; drive that exact
+    // chain with the reported ambient env (no --network → null) and assert where the file would be written.
+    process.env["ST_ROOT"] = "/home/state/convoy/default/smalltalk";
+    const network = resolveNetworkRoot(null);
+    const path = agentFilePath(catalogDir(network), "demo");
+    expect(path).toBe("/home/state/convoy/default/catalog/demo.toml"); // the SYNCED catalog
+    expect(path).not.toContain("/smalltalk/catalog/"); // never the unsynced bus-root subtree
+  });
+});
+
+describe("networkDirOfStRoot — recover the network dir from a bus root (inverse of stRootOf)", () => {
+  it("a bus root (ends in /smalltalk) → its parent network dir", () => {
+    expect(networkDirOfStRoot("/n/default/smalltalk")).toBe("/n/default");
+  });
+  it("a value that is NOT a bus root → used as-is (back-compat for a bare dir)", () => {
+    expect(networkDirOfStRoot("/n/default")).toBe("/n/default");
+  });
+  it("a network literally NAMED smalltalk still resolves: <home>/smalltalk/smalltalk → <home>/smalltalk", () => {
+    expect(networkDirOfStRoot("/home/convoy/smalltalk/smalltalk")).toBe("/home/convoy/smalltalk");
   });
 });
 

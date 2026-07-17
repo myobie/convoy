@@ -8,7 +8,7 @@ import { homedir, hostname } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "./exec.ts";
-import { CONVOY_DIR, DEFAULT_NETWORK_NAME, defaultConvoyNetwork, isNetworkName, networkDirForName, networkLayout, stRootOf } from "./paths.ts";
+import { CONVOY_DIR, DEFAULT_NETWORK_NAME, defaultConvoyNetwork, isNetworkName, networkDirForName, networkDirOfStRoot, networkLayout, stRootOf } from "./paths.ts";
 import { networkNameFromDir, readNetworkConfig, writeNetworkConfig } from "./network-config.ts";
 import { defaultBinDir, installClis } from "./install-cli.ts";
 import { Bus, isLive, type Agent } from "./bus.ts";
@@ -83,10 +83,16 @@ export function unknownFlag(args: string[], bool: string[], value: string[]): st
  *  OWN default network (`<home>/default`). Falling back to the convoy default (last resort) means a bare
  *  `convoy <cmd>` targets convoy's network instead of st/pty's global `~/.local/state/smalltalk` root (the
  *  ST_ROOT-unset footgun behind the 15-dings-on-the-wrong-root incident). Explicit arg / ST_ROOT always
- *  win — the default is only the fallback. Never null. */
+ *  win — the default is only the fallback. Never null.
+ *
+ *  ST_ROOT is the BUS root (`<net>/smalltalk`), NOT the network dir — so the fallback goes through
+ *  `networkDirOfStRoot` to recover `<net>`. Skipping that was a live footgun: `convoy add` wrote the catalog
+ *  under `<net>/smalltalk/catalog/` (unsynced) instead of `<net>/catalog/`, so the agent silently never
+ *  synced/launched (cos, cross-machine demo). */
 export function resolveNetworkRoot(cliNetwork: string | null): string {
   if (cliNetwork) return isNetworkName(cliNetwork) ? networkDirForName(cliNetwork) : cliNetwork;
-  return process.env["ST_ROOT"] ?? defaultConvoyNetwork();
+  const st = process.env["ST_ROOT"];
+  return st ? networkDirOfStRoot(st) : defaultConvoyNetwork();
 }
 
 function out(s = ""): void {
@@ -127,7 +133,10 @@ export const PTY_ROOT_MAX_BYTES = 90;
 export function checkPtyRoot(networkRoot: string | null): { ptyRoot: string; bytes: number; ok: boolean } {
   const ptyRoot = networkRoot
     ? join(resolve(expandTilde(networkRoot)), "pty")
-    : process.env["PTY_ROOT"] ?? join(process.env["ST_ROOT"] ?? join(homedir(), ".local", "state", "smalltalk"), "pty");
+    // No explicit network: prefer the ambient PTY_ROOT, else derive from ST_ROOT — which is the BUS root
+    // (`<net>/smalltalk`), so recover `<net>` first (networkDirOfStRoot) rather than joining `pty` onto the
+    // bus root (`<net>/smalltalk/pty`, wrong). ST_ROOT unset → st/pty's global smalltalk root, unchanged.
+    : process.env["PTY_ROOT"] ?? join(process.env["ST_ROOT"] ? networkDirOfStRoot(process.env["ST_ROOT"]) : join(homedir(), ".local", "state", "smalltalk"), "pty");
   const bytes = Buffer.byteLength(ptyRoot, "utf8");
   return { ptyRoot, bytes, ok: bytes <= PTY_ROOT_MAX_BYTES };
 }

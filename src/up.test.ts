@@ -66,6 +66,12 @@ describe("resolveRoot + PtyHost — pin PTY_ROOT to the target network's own reg
     expect(resolveRoot(undefined)).toBe("/net/dir");
   });
 
+  it("resolveRoot: the up.ts defaultRoot() twin of the catalog footgun — no CONVOY_NETWORK, ST_ROOT=<net>/smalltalk → <net> (strips the bus-root segment)", () => {
+    delete process.env["CONVOY_NETWORK"];
+    process.env["ST_ROOT"] = "/net/dir/smalltalk";
+    expect(resolveRoot(undefined)).toBe("/net/dir"); // NOT /net/dir/smalltalk — else up reads catalog/pty from the bus-root subtree
+  });
+
   it("ACCEPTANCE: a bogus ambient PTY_ROOT is OVERRIDDEN — `convoy up default` (by NAME) pins PTY_ROOT to the network's OWN pty dir", () => {
     // Repro of cos's migration bug: the shell has a stale/foreign PTY_ROOT; running up by name must retarget it.
     process.env["XDG_STATE_HOME"] = "/x";

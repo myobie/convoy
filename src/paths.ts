@@ -2,7 +2,7 @@
 // (up.ts) can import it without a heavy/circular dependency.
 
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /** The per-workspace overlay directory convoy writes into a composed repo: `<workspace>/.convoy/`
  *  holds PERSONA.md, DING-BUS.md, and pty.toml — everything moved OUT of the repo root so the product
@@ -56,4 +56,17 @@ export function networkLayout(dir: string): NetworkLayout {
 /** The bus root (`ST_ROOT`) for a network dir: `<dir>/smalltalk`. */
 export function stRootOf(dir: string): string {
   return join(dir, "smalltalk");
+}
+
+/** Recover the network DIR from an `ST_ROOT` value — the inverse of `stRootOf` for the common case. Since
+ *  the folder-layout redesign, `ST_ROOT` points at the BUS root (`<net>/smalltalk`), NOT the network dir; a
+ *  value whose last segment is `smalltalk` is therefore a bus root → the network dir is its parent. Anything
+ *  else is taken as an already-network dir (best-effort back-compat — e.g. a test/legacy caller that set
+ *  ST_ROOT to a bare dir). Callers that resolve a network dir from ambient `ST_ROOT` MUST go through this,
+ *  else they footgun: `convoy add` fell back to `ST_ROOT` verbatim and wrote the catalog under
+ *  `<net>/smalltalk/catalog/` — a dir the catalog sync does NOT watch — so the agent silently never synced
+ *  or launched. Note a network literally named `smalltalk` still resolves correctly: its bus root is
+ *  `<home>/smalltalk/smalltalk`, whose parent is the (correct) `<home>/smalltalk`. */
+export function networkDirOfStRoot(stRoot: string): string {
+  return basename(stRoot) === "smalltalk" ? dirname(stRoot) : stRoot;
 }
