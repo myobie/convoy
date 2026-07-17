@@ -20,6 +20,7 @@ import { harnessCheckups } from "./doctor/checkup.ts";
 import { gitUsableCheck, nodeVersionCheck, osCheck, tmpdirSocketCheck } from "./doctor/env.ts";
 import { compactHookHealth } from "./doctor/hooks.ts";
 import { runFullOrgSuite, runReadinessSuite } from "./doctor/suite.ts";
+import { structureChecks } from "./doctor/structure.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
 import { preflight, shortHostname, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
@@ -379,6 +380,16 @@ export async function cmdDoctor(args: string[]): Promise<number> {
   } else {
     bullet(false, `bus does NOT round-trip — \`st agents --json\` failed on ${network ?? "default network"}`);
     failures++;
+  }
+
+  out("Structure — proving the network is laid out correctly");
+  for (const c of structureChecks(network)) {
+    bullet(c.ok, `${c.name}: ${c.detail}`);
+    out(`      → ${c.proves}`); // narrate WHAT each check proves (Nathan: chatty)
+    if (!c.ok) {
+      if (c.fix) out(`      → fix: ${c.fix}`);
+      failures++;
+    }
   }
 
   out("Paths");
