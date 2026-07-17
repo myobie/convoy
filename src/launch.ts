@@ -4,7 +4,7 @@
 // the Claude Code hooks, and the `st ding` sidecar. smalltalk keeps ONLY: the bus (`st`), the `st ding`
 // binary (spawned as a command, not imported), and the hook SCRIPTS (referenced by path).
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as tomlParse, stringify as tomlStringify } from "smol-toml";
@@ -13,7 +13,7 @@ import { ensureInstalled } from "./personas.ts";
 import { busAgentId, resolvedPersonaPath, sessionId, specPermanent, specPermissionMode, type AgentSpec, type Harness } from "./agent-spec.ts";
 import type { Role } from "./role.ts";
 import { pretrustDir, pretrustDirsCodex } from "./trust.ts";
-import { CONVOY_DIR, stRootOf } from "./paths.ts";
+import { CONVOY_DIR, networkLayout, stRootOf } from "./paths.ts";
 
 // The pty session key is per-harness: claude → [sessions.claude], codex → [sessions.codex]. (Before,
 // this was hardcoded "claude", so `--harness codex` silently wrote a claude session — a false-harness
@@ -340,6 +340,20 @@ export async function nativeLaunch(spec: AgentSpec): Promise<{ spawned: string[]
     const member = join(stRootOf(spec.networkRoot), busAgentId(spec));
     mkdirSync(join(member, "inbox"), { recursive: true });
     mkdirSync(join(member, "archive"), { recursive: true });
+
+    // Give the agent's workspace a home under the network's worktrees/ — a single view of everything the
+    // network is working on. With no megarepo, that's a SYMLINK to the agent's repo. Best-effort +
+    // idempotent (replace a stale link). (Megarepo worktree-cutting is a follow-up.)
+    if (spec.workingDir) {
+      const link = join(networkLayout(spec.networkRoot).worktrees, spec.identity);
+      try {
+        mkdirSync(dirname(link), { recursive: true });
+        rmSync(link, { force: true });
+        symlinkSync(spec.workingDir, link);
+      } catch {
+        // non-fatal — the visibility symlink never blocks a launch
+      }
+    }
   }
 
   return spawnFromPtyFile(dir, spec.networkRoot);

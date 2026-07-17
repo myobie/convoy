@@ -8,6 +8,7 @@ import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "./exec.ts";
 import { CONVOY_DIR, defaultConvoyNetwork, isNetworkName, networkDirForName, networkLayout, stRootOf } from "./paths.ts";
+import { networkNameFromDir, readNetworkConfig, writeNetworkConfig } from "./network-config.ts";
 import { defaultBinDir, installClis } from "./install-cli.ts";
 import { Bus, isLive, type Agent } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, workspaceOfPtyfile, type SupervisedSession } from "./host.ts";
@@ -20,7 +21,7 @@ import { compactHookHealth } from "./doctor/hooks.ts";
 import { runFullOrgSuite, runReadinessSuite } from "./doctor/suite.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
-import { preflight, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
+import { preflight, shortHostname, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
 import { claudeConfigPath, codexConfigPath, pretrustDirs, pretrustDirsCodex } from "./trust.ts";
 
 // ---- arg helpers ----
@@ -160,6 +161,13 @@ export function resolveNetworkEnv(args: string[]): { networkDir: string; stRoot:
   return { networkDir, stRoot: l.stRoot, ptyRoot: l.ptyRoot };
 }
 
+/** Host-prefix a bare identity (`cvw-claude` → `silber.cvw-claude`) so a human acting-as an agent gets
+ *  an ST_AGENT that MATCHES the host-prefixed bus folder (`<net>/smalltalk/<host>.<id>/`). An identity
+ *  that already carries a host prefix (contains a `.`) passes through unchanged. */
+export function hostPrefixedIdentity(id: string): string {
+  return id.includes(".") ? id : `${shortHostname()}.${id}`;
+}
+
 /** `convoy env [network] [--identity <id>]` — print eval-safe exports for a network's env, so
  *  `eval "$(convoy env <net>)"` targets that network's ST_ROOT + PTY_ROOT with zero manual exports
  *  (the footgun: forgetting them → pty/st hit the global root, not the network). Env is DERIVED from
@@ -175,7 +183,8 @@ export function cmdEnv(args: string[]): number {
     err(r.error);
     return 1;
   }
-  for (const line of networkEnvExports(r.networkDir, optValue(args, "--identity"))) out(line);
+  const id = optValue(args, "--identity");
+  for (const line of networkEnvExports(r.networkDir, id ? hostPrefixedIdentity(id) : null)) out(line);
   return 0;
 }
 
@@ -194,7 +203,8 @@ export async function cmdShell(args: string[]): Promise<number> {
     err(r.error);
     return 1;
   }
-  const identity = optValue(args, "--identity");
+  const rawId = optValue(args, "--identity");
+  const identity = rawId ? hostPrefixedIdentity(rawId) : null; // match the host-prefixed bus folder
   const shell = process.env["SHELL"] || "/bin/sh";
   const env: NodeJS.ProcessEnv = { ...process.env, ST_ROOT: r.stRoot, PTY_ROOT: r.ptyRoot, CONVOY_NETWORK: r.networkDir };
   if (identity) env["ST_AGENT"] = identity;
@@ -500,6 +510,10 @@ export async function cmdInit(args: string[]): Promise<number> {
   mkdirSync(layout.ptyRoot, { recursive: true });
   mkdirSync(layout.worktrees, { recursive: true });
   if (fresh) out(`created network ${dir} (smalltalk/ + pty/ + worktrees/)`);
+  // Record the network config artifact (<net>/convoy.toml) so add/up/doctor stay consistent and the
+  // user has one reviewable record. Preserve an existing megarepo entry across a re-init.
+  const priorCfg = readNetworkConfig(dir);
+  writeNetworkConfig(dir, { name: networkNameFromDir(dir), ...(priorCfg?.megarepo ? { megarepo: priorCfg.megarepo } : {}) });
   const stArgs = ["init", layout.stRoot];
   if (hasFlag(args, "--no-channel")) stArgs.push("--no-channel");
   const r = await run("st", stArgs);

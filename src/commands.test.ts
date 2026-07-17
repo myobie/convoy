@@ -2,7 +2,8 @@ import { afterEach, describe, it, expect } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentForest, checkPtyRoot, existingPtyTomlIdentity, formatActivityAge, networkEnvExports, optValue, pathTooLongMessage, positionals, PTY_ROOT_MAX_BYTES, readAgentPresence, renderForest, resolveNetworkEnv, resolveNetworkRoot, shellQuote, shortHost, unknownFlag, type LocalInfo } from "./commands.ts";
+import { agentForest, checkPtyRoot, existingPtyTomlIdentity, formatActivityAge, hostPrefixedIdentity, networkEnvExports, optValue, pathTooLongMessage, positionals, PTY_ROOT_MAX_BYTES, readAgentPresence, renderForest, resolveNetworkEnv, resolveNetworkRoot, shellQuote, shortHost, unknownFlag, type LocalInfo } from "./commands.ts";
+import { shortHostname } from "./agent-spec.ts";
 import { convoyHome, defaultConvoyNetwork, isNetworkName, networkDirForName } from "./paths.ts";
 import type { Agent } from "./bus.ts";
 
@@ -151,6 +152,11 @@ describe("convoy env / shell — network env exports (footgun-proof targeting)",
 
   it("networkEnvExports SETS ST_AGENT when acting-as an identity", () => {
     expect(networkEnvExports("/net/convoy", "convoy-claude")[3]).toBe("export ST_AGENT='convoy-claude'");
+  });
+
+  it("hostPrefixedIdentity: a bare id gets the short-host prefix; an already-prefixed one passes through", () => {
+    expect(hostPrefixedIdentity("cvw-claude")).toBe(`${shortHostname()}.cvw-claude`); // matches the bus folder
+    expect(hostPrefixedIdentity("silber.cvw-claude")).toBe("silber.cvw-claude"); // already prefixed → unchanged
   });
 
   it("resolveNetworkEnv derives {networkDir, stRoot=<dir>/smalltalk, ptyRoot=<dir>/pty} from a REAL network dir", () => {
