@@ -564,8 +564,9 @@ export async function cmdInit(args: string[]): Promise<number> {
   }
 
   // 3. Create the structure + config, narrating each step.
-  say("→ Creating the network structure (smalltalk/ = the bus · pty/ = runtime · worktrees/ = workspaces)…");
+  say("→ Creating the network structure (smalltalk/ = the bus · catalog/ = agent files (desired state) · pty/ = runtime · worktrees/ = workspaces)…");
   mkdirSync(layout.stRoot, { recursive: true });
+  mkdirSync(catalogDir(dir), { recursive: true }); // the SYNCED catalog — `convoy add` writes agent files here; smalltalk syncs it like smalltalk/ (piece 2C)
   mkdirSync(layout.ptyRoot, { recursive: true });
   mkdirSync(layout.worktrees, { recursive: true });
   say("→ Recording the network config (convoy.toml)…");
