@@ -15,7 +15,7 @@ import { Bus, isLive, type Agent } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, workspaceOfPtyfile, type SupervisedSession } from "./host.ts";
 import { busIdOf } from "./up.ts";
 import { discoverSmalltalkDir, nativeLaunch, regenerateDingRoot, writeAgentFiles } from "./launch.ts";
-import { agentFilePath, agentFileToSpec, catalogDir, readAgentFile, SAMPLE_AGENT_TOML } from "./agent-file.ts";
+import { agentFilePath, agentFileToSpec, agentFileToToml, catalogDir, readAgentFile, writeAgentFile, SAMPLE_AGENT_TOML, type AgentFile } from "./agent-file.ts";
 import { authReadiness } from "./doctor/auth.ts";
 import { harnessCheckups } from "./doctor/checkup.ts";
 import { gitUsableCheck, nodeVersionCheck, osCheck, tmpdirSocketCheck } from "./doctor/env.ts";
@@ -637,7 +637,7 @@ export async function cutWorktree(megarepo: string, path: string, identity: stri
 }
 
 export async function cmdAdd(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run", "--force"], ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--prefix", "--config-dir"]);
+  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run", "--force"], ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--host"]);
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy add\` — refusing rather than silently ignoring it. See \`convoy add --help\`.`);
     return 2;
@@ -668,37 +668,53 @@ export async function cmdAdd(args: string[]): Promise<number> {
     return 2;
   }
   const network = resolveNetworkRoot(optValue(args, "--network"));
-  let workingDir = optValue(args, "--dir");
-  // Megarepo model: with no explicit --dir and a megarepo configured for this network, cut a git worktree
-  // off it into <net>/worktrees/<id> — the agent works THERE (a dedicated worktree, never the user's
-  // arbitrary checkout). --dir always overrides.
-  if (!workingDir) {
-    const cfg = readNetworkConfig(network);
-    if (cfg?.megarepo) {
-      const wt = join(networkLayout(network).worktrees, identity);
-      const cut = await cutWorktree(cfg.megarepo, wt, identity);
-      if (!cut.ok) {
-        err(cut.error);
-        return 1;
-      }
-      workingDir = wt;
-      out(`  worktree ${wt} (off megarepo ${cfg.megarepo}, branch ${cut.branch})`);
-    }
+
+  // DECLARE-ONLY (Nathan's piece-2 call): `convoy add` writes the agent file (declarative intent) into the
+  // SYNCED catalog and does NOTHING else — no render, no launch, no bus folder, no pretrust, no persona-clone,
+  // no worktree cut. The catalog is desired state; `convoy up` renders-if-needed + launches this host's agents
+  // on the way (piece 3), and `convoy render <id>` materializes the overlay standalone. Declaring != running.
+  //
+  // workspace (accepts both forms Nathan signed off): --dir <abs path> wins; else, with a megarepo configured,
+  // the intended per-agent worktree path <net>/worktrees/<id> (materialize cuts it off the megarepo — reuses
+  // #59, at materialize-time now that add is declare-only). No --dir + no megarepo → no workspace (agents need
+  // one) → refuse with a clear fix.
+  const dir = optValue(args, "--dir");
+  const cfg = readNetworkConfig(network);
+  const workspace = dir ? resolve(expandTilde(dir)) : cfg?.megarepo ? join(networkLayout(network).worktrees, identity) : null;
+  if (!workspace) {
+    err(`no workspace for "${identity}": pass --dir <repo>, or configure a megarepo (\`convoy init --megarepo <path>\`) so a worktree is cut for it at launch.`);
+    return 1;
   }
-  const spec: AgentSpec = {
-    harness: harnessRaw as Harness,
-    role,
+
+  const persona = optValue(args, "--persona");
+  const af: AgentFile = {
     identity,
+    role,
+    host: optValue(args, "--host") ?? shortHostname(),
+    workspace,
+    harness: harnessRaw as Harness,
     transport,
-    networkRoot: network,
-    personaOverride: optValue(args, "--persona"),
-    workingDir,
-    permanentOverride: hasFlag(args, "--permanent") ? true : null,
-    prefix: optValue(args, "--prefix"),
-    configDir: optValue(args, "--config-dir"),
+    ...(persona ? { persona } : {}),
+    ...(hasFlag(args, "--permanent") ? { strategy: "permanent" as const } : {}),
   };
-  out(`convoy add — ${identity}`);
-  return launchSpec(spec, { dryRun: hasFlag(args, "--dry-run"), force: hasFlag(args, "--force") });
+
+  const path = agentFilePath(catalogDir(network), identity);
+  const existed = existsSync(path);
+  if (existed && !hasFlag(args, "--force")) {
+    err(`agent "${identity}" is already declared at ${path}. The catalog SYNCS across machines — overwriting could disrupt a running agent. Re-run with --force to replace it.`);
+    return 1;
+  }
+  if (hasFlag(args, "--dry-run")) {
+    out(`convoy add — DRY RUN: would ${existed ? "OVERWRITE" : "write"} the agent file ${path}:\n`);
+    out(agentFileToToml(af));
+    out("✓ Dry run only. Re-run without --dry-run to declare it.");
+    return 0;
+  }
+  writeAgentFile(path, af);
+  out(`✓ declared "${identity}" (${role}, host ${af.host})${existed ? " — REPLACED" : ""} → ${path}`);
+  out(`  workspace: ${workspace}${!dir && cfg?.megarepo ? ` (a worktree off megarepo ${cfg.megarepo}, cut at launch)` : ""}`);
+  out(`  NOTHING launched — the catalog is desired state. Run \`convoy up\` to reconcile + launch this host's agents (or \`convoy render ${identity}\` to materialize the overlay now).`);
+  return 0;
 }
 
 async function ensureRepo(path: string, identity: string): Promise<void> {

@@ -6,9 +6,9 @@
 // first-class here, and render compiles it DOWN to the overlay. Deliberately NOT the reverse-engineered
 // pty.toml (that would be a backwards-compat shim — rejected per "aim for the moon, clean cut").
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { parse as tomlParse } from "smol-toml";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { parse as tomlParse, stringify as tomlStringify } from "smol-toml";
 import { parseRole, type Role } from "./role.ts";
 import type { AgentSpec, Harness, Transport } from "./agent-spec.ts";
 
@@ -83,6 +83,28 @@ export function parseAgentFile(text: string): AgentFile {
   if (tier) af.tier = tier;
   if (doc["env"] && typeof doc["env"] === "object") af.env = doc["env"] as Record<string, string>;
   return af;
+}
+
+/** Serialize an AgentFile to TOML text. Only SET fields are emitted, so the file stays minimal +
+ *  human-diffable — this is the declarative artifact `convoy add` authors (piece 2). Order matches the
+ *  sample for readability. Pure (used for `--dry-run` preview + the writer). */
+export function agentFileToToml(af: AgentFile): string {
+  const doc: Record<string, unknown> = { identity: af.identity, role: af.role };
+  if (af.host) doc["host"] = af.host;
+  if (af.workspace) doc["workspace"] = af.workspace;
+  if (af.harness) doc["harness"] = af.harness;
+  if (af.transport) doc["transport"] = af.transport;
+  if (af.persona) doc["persona"] = af.persona;
+  if (af.strategy) doc["strategy"] = af.strategy;
+  if (af.tier) doc["tier"] = af.tier;
+  if (af.env && Object.keys(af.env).length > 0) doc["env"] = af.env;
+  return tomlStringify(doc);
+}
+
+/** Write an AgentFile as TOML to `path` (creating the catalog dir). */
+export function writeAgentFile(path: string, af: AgentFile): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, agentFileToToml(af));
 }
 
 /** Read + parse the agent file at `path`. Throws (with the path) on read/parse/validation failure. */

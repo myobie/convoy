@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { agentFilePath, agentFileToSpec, catalogDir, parseAgentFile, type AgentFile } from "./agent-file.ts";
+import { agentFilePath, agentFileToSpec, agentFileToToml, catalogDir, parseAgentFile, type AgentFile } from "./agent-file.ts";
 
 describe("parseAgentFile — schema + validation", () => {
   it("parses a full agent file", () => {
@@ -74,6 +74,20 @@ describe("agentFileToSpec — compile intent → AgentSpec", () => {
     expect(agentFileToSpec({ ...base, workspace: "/from-file" }, { networkRoot: null }).workingDir).toBe("/from-file");
     expect(agentFileToSpec({ ...base, workspace: "/from-file" }, { networkRoot: null, workspace: "/override" }).workingDir).toBe("/override");
     expect(agentFileToSpec(base, { networkRoot: null }).workingDir).toBe(null);
+  });
+});
+
+describe("agentFileToToml — serialize (what convoy add authors)", () => {
+  it("round-trips through parse: write then read yields the same AgentFile", () => {
+    const af: AgentFile = { identity: "cos-claude", role: "chief-of-staff", host: "silber", workspace: "/repos/cos", harness: "codex", transport: "mcp", persona: "/p.md", strategy: "permanent" };
+    expect(parseAgentFile(agentFileToToml(af))).toEqual(af);
+  });
+
+  it("emits only SET fields (minimal file)", () => {
+    const toml = agentFileToToml({ identity: "wk", role: "worker" });
+    expect(toml).toContain('identity = "wk"');
+    expect(toml).toContain('role = "worker"');
+    expect(toml).not.toMatch(/host|workspace|harness|transport|persona|strategy/);
   });
 });
 
