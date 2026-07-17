@@ -7,7 +7,7 @@ import { homedir, hostname } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "./exec.ts";
-import { CONVOY_DIR, defaultConvoyNetwork } from "./paths.ts";
+import { CONVOY_DIR, defaultConvoyNetwork, isNetworkName, networkDirForName } from "./paths.ts";
 import { defaultBinDir, installClis } from "./install-cli.ts";
 import { Bus, isLive, type Agent } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, workspaceOfPtyfile, type SupervisedSession } from "./host.ts";
@@ -74,14 +74,15 @@ export function unknownFlag(args: string[], bool: string[], value: string[]): st
   return null;
 }
 
-/** The effective network root, in priority order: an explicit `--network`/network arg, else ambient
- *  `ST_ROOT`, else convoy's OWN default network (`defaultConvoyNetwork()` = `<state>/convoy`). Falling back
- *  to ST_ROOT keeps the pty sessions (agent + ding sidecar) in the SAME root as the bus; falling back to
- *  the convoy default (last resort) means a bare `convoy <cmd>` targets convoy's network instead of st/pty's
- *  global `~/.local/state/smalltalk` root (the ST_ROOT-unset footgun behind the 15-dings-on-the-wrong-root
- *  incident). Explicit arg / --network / ST_ROOT always win — the default is only the fallback. Never null. */
+/** The effective network DIR, in priority order: an explicit network arg/`--network` (a bare NAME like
+ *  `default` resolves to `<home>/<name>`; a path is used as-is), else ambient `ST_ROOT`, else convoy's
+ *  OWN default network (`<home>/default`). Falling back to the convoy default (last resort) means a bare
+ *  `convoy <cmd>` targets convoy's network instead of st/pty's global `~/.local/state/smalltalk` root (the
+ *  ST_ROOT-unset footgun behind the 15-dings-on-the-wrong-root incident). Explicit arg / ST_ROOT always
+ *  win — the default is only the fallback. Never null. */
 export function resolveNetworkRoot(cliNetwork: string | null): string {
-  return cliNetwork ?? process.env["ST_ROOT"] ?? defaultConvoyNetwork();
+  if (cliNetwork) return isNetworkName(cliNetwork) ? networkDirForName(cliNetwork) : cliNetwork;
+  return process.env["ST_ROOT"] ?? defaultConvoyNetwork();
 }
 
 function out(s = ""): void {

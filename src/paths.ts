@@ -11,17 +11,31 @@ import { join } from "node:path";
  *  guard / reload) all agree on the location. */
 export const CONVOY_DIR = ".convoy";
 
-/** convoy's OWN default network location: `($XDG_STATE_HOME | ~/.local/state)/convoy`.
- *
- *  This is EXACTLY where the live network already sits, so adopting it as the default is
- *  backward-compatible. It gives convoy a default of its own instead of falling through to st/pty's
- *  `~/.local/state/smalltalk` when `ST_ROOT` is unset — the mismatch behind the fleet
- *  15-dings-on-the-wrong-root incident, and the reason a newcomer had to know a dir/env to get started.
- *
- *  It is ONLY the last-resort fallback: an explicit network arg, `--network`, or ambient `ST_ROOT` all
- *  still win. Standalone `st` keeps its OWN default (`~/.local/state/smalltalk`) — this changes only how
- *  CONVOY resolves its default. Named / multi-network homes are a separate future thread (this stays flat:
- *  the default IS `<state>/convoy`, never a `<state>/convoy/default` subdir). */
-export function defaultConvoyNetwork(): string {
+/** convoy's HOME for all networks: `($XDG_STATE_HOME | ~/.local/state)/convoy`. Named networks live
+ *  side-by-side underneath it (`<home>/<name>`). */
+export function convoyHome(): string {
   return join(process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state"), "convoy");
+}
+
+/** The name of the default network when none is given. */
+export const DEFAULT_NETWORK_NAME = "default";
+
+/** The dir for a NAMED network: `<home>/<name>`. */
+export function networkDirForName(name: string): string {
+  return join(convoyHome(), name);
+}
+
+/** Is `value` a bare network NAME (resolves under convoy's home) vs a filesystem PATH (used as-is)?
+ *  A name is a single token — starts alphanumeric, then `[A-Za-z0-9._-]`, and contains NO path
+ *  separator. So `default` / `my-net` are names; `/tmp/n`, `./n`, `~/n`, `../n` are paths. */
+export function isNetworkName(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value) && !value.includes("/");
+}
+
+/** convoy's OWN default NETWORK: `<home>/default`. Used only as the last-resort fallback (an explicit
+ *  network name/path, `--network`, or ambient `ST_ROOT` all still win) — so `convoy init` then
+ *  `convoy up` works with zero config. Standalone `st` keeps its own `~/.local/state/smalltalk` default;
+ *  this changes only how CONVOY resolves its default. */
+export function defaultConvoyNetwork(): string {
+  return networkDirForName(DEFAULT_NETWORK_NAME);
 }

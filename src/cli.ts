@@ -125,7 +125,7 @@ function printHelp(): void {
       "SUBCOMMANDS:\n" +
       "  ls (default)   list the convoy's members [--tree = spawn-parentage tree + cross-machine liveness (synced status-mtime + host) --stale-after <ms> --live-only --json --network]\n" +
       "  doctor         setup-readiness suite: prove your setup can do real agent work [--quick = preflight only; --full = real CoS→sup→worker org proof (slower)]\n" +
-      "  init [dir]     create + wire a network (auto-clones personas)\n" +
+      "  init [name|dir] create + wire a network (auto-clones personas); a bare NAME lives at <home>/<name>, a path is used as-is\n" +
       "  add <role>     add an agent (correct-by-construction) [--identity --harness claude|codex --transport ding|mcp --mcp --network --dir --persona --permanent --prefix --config-dir --dry-run --force]\n" +
       "  cos --repo <d> bootstrap a Chief of Staff\n" +
       "  up <network>   host a network in the foreground (TCC anchor + supervisor + flapping-cap)\n" +
@@ -137,7 +137,8 @@ function printHelp(): void {
       "  pretrust <dir>... batch pre-trust agent dirs before spawning many back-to-back (avoids the trust race) [--config-dir]\n" +
       "  install-cli    symlink convoy + st + pty onto PATH (default ~/.local/bin) — reliable, no npm link [--bin <dir>]\n" +
       "  personas <status|install>\n" +
-      "\nDEFAULT NETWORK: when no network arg / --network / ST_ROOT is given, convoy uses $XDG_STATE_HOME|~/.local/state + /convoy\n" +
-      "  (its own default, not st's ~/.local/state/smalltalk) — so `convoy init` then `convoy up` works with zero config.\n",
+      "\nNAMED NETWORKS: networks live at ($XDG_STATE_HOME|~/.local/state)/convoy/<name>, default name \"default\". A bare\n" +
+      "  network NAME resolves under that home; a path is used as-is. No network arg / --network / ST_ROOT → the default\n" +
+      "  network (<home>/default, not st's global ~/.local/state/smalltalk) — so `convoy init` then `convoy up` works with zero config.\n",
   );
 }

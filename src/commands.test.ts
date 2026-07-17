@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentForest, checkPtyRoot, existingPtyTomlIdentity, formatActivityAge, networkEnvExports, optValue, pathTooLongMessage, positionals, PTY_ROOT_MAX_BYTES, readAgentPresence, renderForest, resolveNetworkEnv, resolveNetworkRoot, shellQuote, shortHost, unknownFlag, type LocalInfo } from "./commands.ts";
-import { defaultConvoyNetwork } from "./paths.ts";
+import { convoyHome, defaultConvoyNetwork, isNetworkName, networkDirForName } from "./paths.ts";
 import type { Agent } from "./bus.ts";
 
 describe("arg parsing: --flag=value form (silent-default trap)", () => {
@@ -59,25 +59,38 @@ describe("resolveNetworkRoot (no-leak: pty scope follows the bus scope)", () => 
   });
 });
 
-describe("defaultConvoyNetwork (convoy's own default network location)", () => {
+describe("defaultConvoyNetwork + named networks (convoy/<name>/, default 'default')", () => {
   const savedXdg = process.env["XDG_STATE_HOME"];
   afterEach(() => {
     if (savedXdg === undefined) delete process.env["XDG_STATE_HOME"];
     else process.env["XDG_STATE_HOME"] = savedXdg;
   });
 
-  it("respects XDG_STATE_HOME → <XDG_STATE_HOME>/convoy", () => {
+  it("default network = <XDG_STATE_HOME>/convoy/default (named)", () => {
     process.env["XDG_STATE_HOME"] = "/xdg/state";
-    expect(defaultConvoyNetwork()).toBe("/xdg/state/convoy");
+    expect(defaultConvoyNetwork()).toBe("/xdg/state/convoy/default");
   });
-  it("falls back to ~/.local/state/convoy when XDG_STATE_HOME is unset", () => {
+  it("falls back to ~/.local/state/convoy/default when XDG_STATE_HOME is unset", () => {
     delete process.env["XDG_STATE_HOME"];
-    expect(defaultConvoyNetwork()).toBe(join(homedir(), ".local", "state", "convoy"));
+    expect(defaultConvoyNetwork()).toBe(join(homedir(), ".local", "state", "convoy", "default"));
   });
-  it("is FLAT — the default IS <state>/convoy, never a /convoy/default subdir (named nets = separate thread)", () => {
+  it("networkDirForName places a named network under the home: <home>/<name>", () => {
     process.env["XDG_STATE_HOME"] = "/x";
-    expect(defaultConvoyNetwork()).toBe("/x/convoy");
-    expect(defaultConvoyNetwork().endsWith("/convoy/default")).toBe(false);
+    expect(networkDirForName("myproj")).toBe("/x/convoy/myproj");
+    expect(convoyHome()).toBe("/x/convoy");
+  });
+  it("isNetworkName: bare tokens are names, paths are not", () => {
+    expect(isNetworkName("default")).toBe(true);
+    expect(isNetworkName("my-net.2")).toBe(true);
+    expect(isNetworkName("/tmp/n")).toBe(false);
+    expect(isNetworkName("./n")).toBe(false);
+    expect(isNetworkName("~/n")).toBe(false);
+    expect(isNetworkName("../n")).toBe(false);
+  });
+  it("resolveNetworkRoot: a NAME resolves under home, a PATH is used as-is", () => {
+    process.env["XDG_STATE_HOME"] = "/x";
+    expect(resolveNetworkRoot("staging")).toBe("/x/convoy/staging");
+    expect(resolveNetworkRoot("/tmp/explicit")).toBe("/tmp/explicit");
   });
 });
 
@@ -161,14 +174,14 @@ describe("convoy env / shell — network env exports (footgun-proof targeting)",
     const savedXdg = process.env["XDG_STATE_HOME"];
     const savedRoot = process.env["ST_ROOT"];
     const base = mkdtempSync(join(tmpdir(), "convoy-xdg-"));
-    const net = join(base, "convoy");
+    const net = join(base, "convoy", "default");
     mkdirSync(net, { recursive: true }); // the default network exists (as it does on a real machine)
     process.env["XDG_STATE_HOME"] = base;
     delete process.env["ST_ROOT"];
     try {
       const r = resolveNetworkEnv([]);
       expect("root" in r).toBe(true);
-      if ("root" in r) expect(r.root).toBe(net); // <XDG_STATE_HOME>/convoy, NOT ~/.local/state/smalltalk
+      if ("root" in r) expect(r.root).toBe(net); // <XDG_STATE_HOME>/convoy/default, NOT ~/.local/state/smalltalk
     } finally {
       if (savedXdg === undefined) delete process.env["XDG_STATE_HOME"];
       else process.env["XDG_STATE_HOME"] = savedXdg;
