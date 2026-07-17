@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { crashDingTargets, workerCrashed } from "./up.ts";
 import type { SupervisedSession } from "./host.ts";
 
-const sess = (name: string, tags: Record<string, string>): SupervisedSession => ({ name, cwd: null, command: "", args: [], status: "running" as never, exitedAt: null, exitCode: null, tags });
+const sess = (name: string, tags: Record<string, string>): SupervisedSession => ({ name, cwd: null, command: "", args: [], status: "running" as never, pid: null, exitedAt: null, exitCode: null, tags });
 // Test resolver: read the bus id from a plain "busId" tag (the real one reads ST_AGENT out of the pty.toml).
 const resolve = (s: SupervisedSession): string | null => s.tags["busId"] ?? null;
 

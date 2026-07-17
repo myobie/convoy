@@ -57,6 +57,7 @@ export interface SupervisedSession {
   command: string;
   args: string[];
   status: SessionInfo["status"];
+  pid: number | null; // the session's process pid (for the adopt-alive liveness probe)
   exitedAt: Date | null;
   exitCode: number | null; // the process exit code when the daemon wrote an exit record (null if none / vanished)
   tags: Record<string, string>;
@@ -70,10 +71,24 @@ export function toSupervised(i: SessionInfo): SupervisedSession {
     command: m?.command ?? "",
     args: m?.args ?? [],
     status: i.status,
+    pid: i.pid,
     exitedAt: m?.exitedAt ? new Date(m.exitedAt) : null,
     exitCode: typeof m?.exitCode === "number" ? m.exitCode : null,
     tags: m?.tags ?? {},
   };
+}
+
+/** Is a process with `pid` actually alive? `process.kill(pid, 0)` probes existence WITHOUT signalling:
+ *  it succeeds → alive; throws ESRCH → dead; throws EPERM → alive but not ours (still alive). Used by the
+ *  adopt-alive guard so convoy never tries to respawn a session whose process is still running. */
+export function processAlive(pid: number | null): boolean {
+  if (pid === null || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM"; // exists but owned by another user → alive
+  }
 }
 
 export function strategyOf(s: SupervisedSession): StrategyTags {

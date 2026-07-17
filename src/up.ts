@@ -20,7 +20,7 @@ import {
   type StrategyTags,
 } from "./flapping-cap.ts";
 import { HostLock } from "./host-lock.ts";
-import { commandHashOf, gone, isPermanent, logicalId, PtyHost, type SupervisedSession } from "./host.ts";
+import { commandHashOf, gone, isPermanent, logicalId, processAlive, PtyHost, type SupervisedSession } from "./host.ts";
 
 export interface UpOptions {
   network?: string | undefined;
@@ -189,6 +189,7 @@ export async function up(opts: UpOptions): Promise<number> {
   const permanentKeys = new Set<string>();
   const supervised = new Set<string>();
   const workerDinged = new Set<string>(); // gone workers aren't respawned → dedup so we ding each once
+  const results = { spawned: 0, adopted: 0, failed: 0, flapping: 0 }; // one-shot reconcile summary (--once)
   const notify = opts.notify ?? [];
   const dingTargets = (crashed: SupervisedSession, sessions: readonly SupervisedSession[]): string[] => crashDingTargets(crashed, sessions, notify, busIdOf);
 
@@ -226,6 +227,19 @@ export async function up(opts: UpOptions): Promise<number> {
       supervised.add(s.name);
       if (!gone(s)) continue;
 
+      // ADOPT-ALIVE: pty can report a session "gone" transiently (a health-check timeout during a CPU
+      // spike) while its PROCESS is actually alive. NEVER respawn a live process — trying to respawn a
+      // `claude --resume <id>` whose original still holds that id fails instantly, and a persistent host
+      // then tight-loops on it (the cos-respawn CPU burn). Probe the pid: if alive, adopt it + skip.
+      if (processAlive(s.pid)) {
+        results.adopted++;
+        emit(
+          { type: "adopt", identity: logicalId(s), session: s.name, pid: s.pid, ts: isoString(now) },
+          `[convoy-up] adopt ${logicalId(s)} session=${s.name} — reported gone but pid ${s.pid} is ALIVE; not respawning`,
+        );
+        continue;
+      }
+
       const key = s.name;
       let prior = state.get(key) ?? parseStrategyTags(s.tags);
 
@@ -248,6 +262,8 @@ export async function up(opts: UpOptions): Promise<number> {
       if (decision.kind === "respawn") {
         state.set(key, decision.tags);
         const ok = await host.respawn(s); // pty restart -y — preserves the real command (strips tags)
+        if (ok) results.spawned++;
+        else results.failed++;
         // Re-assert permanence + the counter AFTER the restart (it strips runtime tags) — for pty's
         // display + so a fresh host still recognizes this session. convoy's own store is authoritative. Also
         // re-assert the crash-ding targeting tags (convoy.tier/convoy.spawner) from the pre-respawn session, so
@@ -273,6 +289,7 @@ export async function up(opts: UpOptions): Promise<number> {
           for (const t of targets) await sendDing(root, t, `crash: ${id}`, body);
         }
       } else {
+        results.flapping++;
         state.set(key, decision.tags);
         host.setTags(s.name, writtenTags(decision.tags)); // strategy.status=flapping for pty's badge
         const e = decision.event;
@@ -299,6 +316,15 @@ export async function up(opts: UpOptions): Promise<number> {
     if (opts.once === true) break;
     for (let left = interval * 4; left > 0 && !stop; left--) await sleep(250);
   } while (!stop);
+
+  // One-shot mode reports what the single reconcile pass did, then exits (no daemon) — for the shepherd
+  // cron + manual healing. --json emits the structured summary (see emit); text prints the human line.
+  if (opts.once === true) {
+    emit(
+      { type: "once_summary", network: root, spawned: results.spawned, adopted: results.adopted, failed: results.failed, flapping: results.flapping, ts: isoString(new Date()) },
+      `[convoy-up] once: reconciled ${root} — spawned ${results.spawned}, adopted ${results.adopted} (already alive), failed ${results.failed}, flapping ${results.flapping}`,
+    );
+  }
 
   // teardown — DECOUPLED (Nomad model): stopping OR crashing the supervisor NEVER tears down the
   // workloads. Agents are long-lived and keep running their last orders; a supervisor restart

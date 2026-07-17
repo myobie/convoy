@@ -128,7 +128,7 @@ function printHelp(): void {
       "  init [name|dir] interactive, narrated: stand up a network (name → megarepo → CoS), NAME lives at <home>/<name> [--megarepo <path> --quiet --json --yes --no-channel]\n" +
       "  add <role>     add an agent (correct-by-construction) [--identity --harness claude|codex --transport ding|mcp --mcp --network --dir --persona --permanent --prefix --config-dir --dry-run --force]\n" +
       "  cos --repo <d> bootstrap a Chief of Staff\n" +
-      "  up <network>   host a network in the foreground (TCC anchor + supervisor + flapping-cap)\n" +
+      "  up <network>   host a network in the foreground (TCC anchor + supervisor + flapping-cap) [--once = one-shot reconcile-and-exit (adopts live sessions, no daemon) --json]\n" +
       "  down [network] tear down the network — the ONLY path that kills sessions [--dry-run --force --json]\n" +
       "  env [network]  print eval-safe exports for a network's env — `eval \"$(convoy env <net>)\"` sets ST_ROOT+PTY_ROOT [--identity <id>]\n" +
       "  shell [network] open an interactive subshell with a network's env exported (pty ls / st just work); exit to leave [--identity <id>]\n" +

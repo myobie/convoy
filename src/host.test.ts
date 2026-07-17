@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { SessionInfo } from "@myobie/pty/client";
 import { commandFingerprint } from "./flapping-cap.ts";
-import { commandHashOf, gone, isPermanent, logicalId, toSupervised } from "./host.ts";
+import { commandHashOf, gone, isPermanent, logicalId, processAlive, toSupervised } from "./host.ts";
 
 function info(over: Partial<SessionInfo> & { tags?: Record<string, string> } = {}): SessionInfo {
   const { tags, ...rest } = over;
@@ -54,5 +54,20 @@ describe("host projections (ported from Host.swift / SupervisedSession)", () => 
     const s = toSupervised(info());
     expect(commandHashOf(s)).toBe(commandFingerprint("sleep", ["100000"]));
     expect(commandHashOf(s)).toMatch(/^[0-9a-f]{16}$/);
+  });
+});
+
+describe("processAlive (the adopt-alive liveness probe)", () => {
+  it("true for the running process, false for null / invalid / dead pids", () => {
+    expect(processAlive(process.pid)).toBe(true); // we are, definitionally, alive
+    expect(processAlive(null)).toBe(false);
+    expect(processAlive(0)).toBe(false);
+    expect(processAlive(-1)).toBe(false);
+    expect(processAlive(2147483646)).toBe(false); // a pid that (almost certainly) isn't running
+  });
+
+  it("toSupervised carries the pid through from SessionInfo", () => {
+    expect(toSupervised(info({ pid: 4242 })).pid).toBe(4242);
+    expect(toSupervised(info({ pid: null })).pid).toBeNull();
   });
 });

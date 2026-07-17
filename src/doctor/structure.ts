@@ -53,15 +53,15 @@ export function structureChecks(network: string): StructureCheck[] {
     fix: cfg ? undefined : "run `convoy init` on this network to create + record it",
   });
 
-  for (const [label, path] of [
-    ["smalltalk/", layout.stRoot],
-    ["pty/", layout.ptyRoot],
-    ["worktrees/", layout.worktrees],
+  for (const [label, path, role] of [
+    ["smalltalk/", layout.stRoot, "the synced bus"],
+    ["pty/", layout.ptyRoot, "machine-local runtime state"],
+    ["worktrees/", layout.worktrees, "the agent workspaces"],
   ] as const) {
     const ok = isDir(path);
     checks.push({
       name: label,
-      proves: `the ${label} directory exists (bus / runtime / workspaces)`,
+      proves: `the ${label} directory exists — ${role}`,
       ok,
       detail: ok ? `${path} present` : `MISSING: ${path}`,
       fix: ok ? undefined : "run `convoy init` to create the network structure",
