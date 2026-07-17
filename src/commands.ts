@@ -14,7 +14,8 @@ import { defaultBinDir, installClis } from "./install-cli.ts";
 import { Bus, isLive, type Agent } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, workspaceOfPtyfile, type SupervisedSession } from "./host.ts";
 import { busIdOf } from "./up.ts";
-import { discoverSmalltalkDir, nativeLaunch, regenerateDingRoot } from "./launch.ts";
+import { discoverSmalltalkDir, nativeLaunch, regenerateDingRoot, writeAgentFiles } from "./launch.ts";
+import { agentFilePath, agentFileToSpec, catalogDir, readAgentFile, SAMPLE_AGENT_TOML } from "./agent-file.ts";
 import { authReadiness } from "./doctor/auth.ts";
 import { harnessCheckups } from "./doctor/checkup.ts";
 import { gitUsableCheck, nodeVersionCheck, osCheck, tmpdirSocketCheck } from "./doctor/env.ts";
@@ -23,7 +24,7 @@ import { runFullOrgSuite, runReadinessSuite } from "./doctor/suite.ts";
 import { structureChecks } from "./doctor/structure.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
-import { preflight, shortHostname, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
+import { preflight, resolvedPersonaPath, shortHostname, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
 import { claudeConfigPath, codexConfigPath, pretrustDirs, pretrustDirsCodex } from "./trust.ts";
 
 // ---- arg helpers ----
@@ -982,6 +983,92 @@ export async function cmdRemove(args: string[]): Promise<number> {
   }
   for (const s of sessions) out((await host.kill(s.name)) ? `✓ stopped ${s.name}` : `• ${s.name} didn't stop cleanly (already exited?)`);
   out(`✓ ${identity} removed from the convoy.`);
+  return 0;
+}
+
+/** `convoy render <identity> [--dir <workspace>] [--network <net>] [--dry-run]` — the "materialize the
+ *  overlay" verb of the declarative model (add = declare · render = materialize · up = reconcile). Reads the
+ *  agent file `<net>/catalog/<identity>.toml` (the declarative intent), compiles it to an AgentSpec, and
+ *  writes the worktree-local overlay — .claude/rules/convoy.md (loader) + .convoy/{PERSONA.md,DING-BUS.md,
+ *  pty.toml} + .claude/settings.local.json — git-excluding all of it. It does NOT launch a pty or touch the
+ *  bus (that's `convoy up`). --dry-run prints exactly which files it would write + git-exclude, touching
+ *  nothing — the no-pollution footprint, made inspectable. Independently useful now (hand-author an agent
+ *  file, render it, look); `convoy add` will author the file in piece 2. */
+export async function cmdRender(args: string[]): Promise<number> {
+  const bad = unknownFlag(args, ["--dry-run", "--print"], ["--dir", "--network"]);
+  if (bad) {
+    err(`unrecognized flag "${bad}" for \`convoy render\`. See \`convoy render --help\`.`);
+    return 2;
+  }
+  const identity = positionals(args)[0];
+  if (!identity) {
+    err("missing identity. Usage: convoy render <identity> [--dir <workspace>] [--dry-run]");
+    return 2;
+  }
+  const network = resolveNetworkRoot(optValue(args, "--network"));
+  const dryRun = hasFlag(args, "--dry-run", "--print");
+  const dirOverride = optValue(args, "--dir") ?? undefined;
+
+  // Resolve the agent file (the declarative intent) from the SYNCED catalog. Pre-piece-2 nothing auto-writes
+  // these, so a user hand-authors <net>/catalog/<identity>.toml for the manual/inspect use case.
+  const afPath = agentFilePath(catalogDir(network), identity);
+  if (!existsSync(afPath)) {
+    err(`no agent file for "${identity}" at ${afPath}.\n  Write one (a sample is below), or once \`convoy add\` writes the catalog (piece 2) it'll be there.\n\n${SAMPLE_AGENT_TOML}`);
+    return 1;
+  }
+  let spec: AgentSpec;
+  try {
+    const af = readAgentFile(afPath);
+    spec = agentFileToSpec(af, { networkRoot: network, workspace: dirOverride });
+  } catch (e) {
+    err(e instanceof Error ? e.message : String(e));
+    return 1;
+  }
+  const workspace = spec.workingDir;
+  if (!workspace) {
+    err(`no workspace for "${identity}": the agent file has no \`workspace\` and no --dir was given.`);
+    return 1;
+  }
+
+  // The overlay files render materializes (conditional ones match the writers: PERSONA.md only when a
+  // persona resolves; DING-BUS.md only on the ding transport). pty.toml + hooks + the loader are always written.
+  const hasPersona = (() => {
+    const p = resolvedPersonaPath(spec);
+    return p !== null && existsSync(p);
+  })();
+  const files = [
+    ".claude/rules/convoy.md",
+    ...(hasPersona ? [`${CONVOY_DIR}/PERSONA.md`] : []),
+    ...(spec.transport === "ding" ? [`${CONVOY_DIR}/DING-BUS.md`] : []),
+    `${CONVOY_DIR}/pty.toml`,
+    ".claude/settings.local.json",
+  ];
+  const excludes = [`${CONVOY_DIR}/`, ".claude/rules/convoy.md"];
+
+  if (dryRun) {
+    out(`convoy render — DRY RUN for "${identity}" (agent file ${afPath}) → ${workspace}`);
+    out("  would WRITE:");
+    for (const f of files) out(`    ${join(workspace, f)}`);
+    out("  would GIT-EXCLUDE (in .git/info/exclude):");
+    for (const e of excludes) out(`    ${e}`);
+    out("  would launch NO pty + touch NO bus.");
+    out("\n✓ Dry run only. Re-run without --dry-run to materialize.");
+    return 0;
+  }
+
+  // Footgun-proof: clone the role's default persona if there's no override, so PERSONA.md resolves.
+  if (spec.personaOverride === null) {
+    try {
+      await ensureInstalled();
+    } catch (e) {
+      err(`personas: ${e instanceof Error ? e.message : String(e)} (rendering without the role persona)`);
+    }
+  }
+  mkdirSync(workspace, { recursive: true });
+  writeAgentFiles(workspace, spec);
+  out(`✓ rendered "${identity}" → ${workspace}`);
+  out(`  wrote ${files.length} overlay file(s) + git-excluded them; launched NO pty, touched NO bus.`);
+  out("  `git status` in the workspace stays clean; inspect .convoy/ + .claude/rules/convoy.md to see the whole footprint.");
   return 0;
 }
 

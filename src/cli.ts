@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { down, up, type DownOptions, type UpOptions } from "./up.ts";
-import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdEnv, cmdInit, cmdInstallCli, cmdLs, cmdPersonas, cmdPretrust, cmdReload, cmdRemove, cmdShell, hasFlag, optValue, positionals, unknownFlag } from "./commands.ts";
+import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdEnv, cmdInit, cmdInstallCli, cmdLs, cmdPersonas, cmdPretrust, cmdReload, cmdRemove, cmdRender, cmdShell, hasFlag, optValue, positionals, unknownFlag } from "./commands.ts";
 import { run } from "./exec.ts";
 
 /** Reject the first flag `convoy <name>` doesn't honor (rc=2) instead of silently ignoring it. */
@@ -61,6 +61,7 @@ export async function main(argv: string[]): Promise<void> {
     case "doctor": code = await cmdDoctor(rest); break;
     case "init": code = await cmdInit(rest); break;
     case "add": code = await cmdAdd(rest); break;
+    case "render": code = await cmdRender(rest); break;
     case "remove": code = await cmdRemove(rest); break;
     case "reload": code = await cmdReload(rest); break;
     case "pretrust": code = await cmdPretrust(rest); break;
@@ -127,6 +128,7 @@ function printHelp(): void {
       "  doctor         setup-readiness suite: prove your setup can do real agent work [--quick = preflight only; --full = real CoS→sup→worker org proof (slower)]\n" +
       "  init [name|dir] interactive, narrated: stand up a network (name → megarepo → CoS), NAME lives at <home>/<name> [--megarepo <path> --quiet --json --yes --no-channel]\n" +
       "  add <role>     add an agent (correct-by-construction) [--identity --harness claude|codex --transport ding|mcp --mcp --network --dir --persona --permanent --prefix --config-dir --dry-run --force]\n" +
+      "  render <id>    materialize an agent's worktree overlay from its catalog agent file — NO launch, NO bus (declarative: add=declare · render=materialize · up=reconcile) [--dir <workspace> --network --dry-run]\n" +
       "  cos --repo <d> bootstrap a Chief of Staff\n" +
       "  up <network>   host a network in the foreground (TCC anchor + supervisor + flapping-cap) [--once = one-shot reconcile-and-exit (adopts live sessions, no daemon) --json]\n" +
       "  down [network] tear down the network — the ONLY path that kills sessions [--dry-run --force --json]\n" +
