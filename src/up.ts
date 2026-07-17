@@ -3,7 +3,7 @@
 // anchor) and reconciles them every interval — respawn on exit (resuming), crash-loop flapping-cap.
 // Built on the NATIVE host (src/host.ts, @myobie/pty/client) + the §5 classifier (src/flapping-cap.ts).
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join } from "node:path";
 import { run } from "./exec.ts";
 import { pretrustDirs, pretrustDirsCodex } from "./trust.ts";
@@ -21,6 +21,10 @@ import {
 } from "./flapping-cap.ts";
 import { HostLock } from "./host-lock.ts";
 import { commandHashOf, gone, isPermanent, logicalId, processAlive, PtyHost, type SupervisedSession } from "./host.ts";
+import { agentBusId, readCatalog, reconcilePlan } from "./reconcile.ts";
+import { agentFileToSpec, catalogDir } from "./agent-file.ts";
+import { nativeLaunch } from "./launch.ts";
+import { shortHostname } from "./agent-spec.ts";
 
 export interface UpOptions {
   network?: string | undefined;
@@ -189,14 +193,43 @@ export async function up(opts: UpOptions): Promise<number> {
   const permanentKeys = new Set<string>();
   const supervised = new Set<string>();
   const workerDinged = new Set<string>(); // gone workers aren't respawned → dedup so we ding each once
-  const results = { spawned: 0, adopted: 0, failed: 0, flapping: 0 }; // one-shot reconcile summary (--once)
+  const results = { spawned: 0, adopted: 0, failed: 0, flapping: 0, retired: 0 }; // one-shot reconcile summary (--once)
+  const thisHost = shortHostname(); // the catalog host-filter key — up only launches/adopts agents whose host is us
   const notify = opts.notify ?? [];
   const dingTargets = (crashed: SupervisedSession, sessions: readonly SupervisedSession[]): string[] => crashDingTargets(crashed, sessions, notify, busIdOf);
 
   const tick = async (): Promise<void> => {
     const now = new Date();
+
+    // PIECE 3 — CATALOG-DRIVEN reconcile (desired state). Read the SYNCED catalog, host-filter to THIS machine,
+    // and: LAUNCH this host's active agents that aren't running yet (add now only DECLARES — up is what
+    // launches), and TEAR DOWN retired agents (decommission = an edit `retired=true`, honored here). A
+    // host=OTHER agent is SKIPPED — its own machine's `convoy up` launches it once the catalog syncs there
+    // (the cross-machine scheduler). Gone PERMANENTS are re-launched by the session loop below (which carries
+    // the flapping-cap — launching them here would bypass the crash-loop guard); non-permanents are ephemeral
+    // (Nomad no-respawn). Malformed job files are skipped, never fatal.
+    const { entries, errors } = readCatalog(root);
+    for (const e of errors) emit({ type: "catalog_error", path: e.path, error: e.error, ts: isoString(now) }, `[convoy-up] skipping malformed agent file ${e.path}: ${e.error}`);
+    const catalogSessions = await host.sessions();
+    const plan = reconcilePlan(entries, catalogSessions, thisHost, busIdOf);
+    const retiredBusIds = new Set<string>(entries.filter((e) => e.af.retired && (e.af.host ?? thisHost) === thisHost).map((e) => agentBusId(e.af, thisHost)));
+    for (const t of plan.teardown) {
+      for (const s of t.sessions) await host.kill(s.name);
+      results.retired++;
+      emit({ type: "retire", identity: t.entry.af.identity, sessions: t.sessions.map((s) => s.name), ts: isoString(now) }, `[convoy-up] retire ${t.entry.af.identity} — retired=true → tore down ${t.sessions.length} session(s)`);
+    }
+    const anySession = new Set(catalogSessions.map(busIdOf).filter((x): x is string => x !== null));
+    for (const e of plan.launch) {
+      if (anySession.has(agentBusId(e.af, thisHost))) continue; // has a (gone) session → the session loop respawns it with the cap
+      const { spawned, failed } = await nativeLaunch(agentFileToSpec(e.af, { networkRoot: root }));
+      if (spawned.length > 0) results.spawned++;
+      else results.failed++;
+      emit({ type: "launch", identity: e.af.identity, host: thisHost, spawned, failed, ts: isoString(now) }, `[convoy-up] launch ${e.af.identity} (host ${thisHost}) — ${spawned.length} session(s)${failed.length ? ` (${failed.length} FAILED)` : ""}`);
+    }
+
     const sessions = await host.sessions();
     for (const s of sessions) {
+      if (retiredBusIds.has(busIdOf(s) ?? "")) continue; // retired agent → don't respawn (the catalog pass tore it down)
       if (isPermanent(s)) permanentKeys.add(s.name);
       const permanent = isPermanent(s) || permanentKeys.has(s.name);
 
@@ -311,18 +344,37 @@ export async function up(opts: UpOptions): Promise<number> {
     }
   };
 
+  // WATCH + TIMER (Nathan): `convoy up` reconciles on a timer AND on catalog-folder changes, so a dropped or
+  // edited agent file runs (or retires) IMMEDIATELY, not just at the next tick — the "declare → it runs"
+  // immediacy that makes the synced folder a live scheduler. fs.watch is best-effort (some filesystems don't
+  // support it); the timer is the always-on fallback. Not in --once (a single pass, no daemon).
+  let catalogDirty = false;
+  let watcher: FSWatcher | null = null;
+  if (opts.once !== true) {
+    try {
+      watcher = watch(catalogDir(root), () => {
+        catalogDirty = true;
+      });
+    } catch {
+      // no watch support (or no catalog dir yet) → timer-only; a later reconcile still picks up changes.
+    }
+  }
   do {
+    catalogDirty = false;
     await tick();
     if (opts.once === true) break;
-    for (let left = interval * 4; left > 0 && !stop; left--) await sleep(250);
+    // Sleep the interval, but wake EARLY if the catalog changed (a new/edited/removed agent file) so it
+    // reconciles right away.
+    for (let left = interval * 4; left > 0 && !stop && !catalogDirty; left--) await sleep(250);
   } while (!stop);
+  watcher?.close();
 
   // One-shot mode reports what the single reconcile pass did, then exits (no daemon) — for the shepherd
   // cron + manual healing. --json emits the structured summary (see emit); text prints the human line.
   if (opts.once === true) {
     emit(
-      { type: "once_summary", network: root, spawned: results.spawned, adopted: results.adopted, failed: results.failed, flapping: results.flapping, ts: isoString(new Date()) },
-      `[convoy-up] once: reconciled ${root} — spawned ${results.spawned}, adopted ${results.adopted} (already alive), failed ${results.failed}, flapping ${results.flapping}`,
+      { type: "once_summary", network: root, spawned: results.spawned, adopted: results.adopted, failed: results.failed, flapping: results.flapping, retired: results.retired, ts: isoString(new Date()) },
+      `[convoy-up] once: reconciled ${root} — launched/spawned ${results.spawned}, adopted ${results.adopted} (already alive), retired ${results.retired}, failed ${results.failed}, flapping ${results.flapping}`,
     );
   }
 
