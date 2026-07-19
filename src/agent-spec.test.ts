@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentShort, isValidIdentity, preflight, sessionId, shortHostname, specPermanent, specPermissionMode, specPrefix, type AgentSpec } from "./agent-spec.ts";
+import { agentShort, isValidIdentity, isValidModel, preflight, sessionId, shortHostname, specPermanent, specPermissionMode, specPrefix, type AgentSpec } from "./agent-spec.ts";
 import type { Role } from "./role.ts";
 
 // Pin an EMPTY personas dir so persona resolution is deterministic (no real worker.md leaking in).
@@ -30,12 +30,20 @@ function spec(over: Partial<AgentSpec> = {}): AgentSpec {
     permanentOverride: null,
     prefix: null,
     configDir: null,
+    model: null,
     ...over,
   };
 }
 const derivedMap = (s: AgentSpec) => Object.fromEntries(preflight(s, []).derived);
 
 describe("AgentSpec (ported from AgentSpecTests.swift)", () => {
+  it("isValidModel: shell-safe model-id charset (alnum + . _ : / -, starts alphanumeric)", () => {
+    // Real ids + aliases across both harnesses accepted.
+    for (const ok of ["claude-fable-5", "claude-opus-4-8", "us.anthropic.claude-opus-4", "openai/gpt-5", "gpt-5", "o3", "opus"]) expect(isValidModel(ok)).toBe(true);
+    // Anything with whitespace / quotes / shell metacharacters (it lands in the `sh -c` command) or empty → rejected.
+    for (const bad of ["", "bad; rm -rf", "a b", "$(x)", "a'b", "a`b", "-leading", "a&b"]) expect(isValidModel(bad)).toBe(false);
+  });
+
   it("isValidIdentity: lowercase alnum + . _ -, starts alphanumeric", () => {
     for (const ok of ["convoy-claude", "app-web-claude", "build-wk.2", "a", "x_y.z-1"]) expect(isValidIdentity(ok)).toBe(true);
     for (const bad of ["-x", "Cap", "has space", "", ".dot", "a/b"]) expect(isValidIdentity(bad)).toBe(false);
@@ -72,6 +80,11 @@ describe("AgentSpec (ported from AgentSpecTests.swift)", () => {
     expect(d["role"]).toBe("worker");
     expect(d["transport"]).toBe("ding");
     expect(d["identity"]).toBe("demo-wk");
+  });
+
+  it("derived model: shows the per-agent model, else the harness default", () => {
+    expect(derivedMap(spec({ model: "claude-fable-5" }))["model"]).toBe("claude-fable-5");
+    expect(derivedMap(spec({ model: null }))["model"]).toBe("(harness default)");
   });
 
   it("codex is always ding-mode (mcp is ignored with a warning)", () => {

@@ -24,7 +24,7 @@ import { runFullOrgSuite, runReadinessSuite } from "./doctor/suite.ts";
 import { structureChecks } from "./doctor/structure.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
-import { preflight, resolvedPersonaPath, shortHostname, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
+import { isValidModel, preflight, resolvedPersonaPath, shortHostname, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
 import { claudeConfigPath, codexConfigPath, pretrustDirs, pretrustDirsCodex } from "./trust.ts";
 
 // ---- arg helpers ----
@@ -647,7 +647,7 @@ export async function cutWorktree(megarepo: string, path: string, identity: stri
 }
 
 export async function cmdAdd(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run", "--force"], ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--host"]);
+  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run", "--force"], ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--host", "--model"]);
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy add\` — refusing rather than silently ignoring it. See \`convoy add --help\`.`);
     return 2;
@@ -677,6 +677,11 @@ export async function cmdAdd(args: string[]): Promise<number> {
     err(`unknown transport. Valid: ding, mcp`);
     return 2;
   }
+  const model = optValue(args, "--model");
+  if (model !== null && !isValidModel(model)) {
+    err(`invalid --model "${model}" — use letters, digits, and . _ : / - (start alphanumeric), e.g. claude-fable-5`);
+    return 2;
+  }
   const network = resolveNetworkRoot(optValue(args, "--network"));
 
   // DECLARE-ONLY (Nathan's piece-2 call): `convoy add` writes the agent file (declarative intent) into the
@@ -704,6 +709,7 @@ export async function cmdAdd(args: string[]): Promise<number> {
     workspace,
     harness: harnessRaw as Harness,
     transport,
+    ...(model ? { model } : {}),
     ...(persona ? { persona } : {}),
     ...(hasFlag(args, "--permanent") ? { strategy: "permanent" as const } : {}),
   };
@@ -780,6 +786,7 @@ export async function cmdCos(args: string[]): Promise<number> {
     permanentOverride: null,
     prefix: optValue(args, "--prefix"),
     configDir: optValue(args, "--config-dir"),
+    model: null, // `convoy cos` (direct CoS launch) uses the harness default; per-agent --model is a `convoy add` feature
   };
   const rc = await launchSpec(spec, { dryRun, force: hasFlag(args, "--force") });
   if (rc === 0 && !dryRun) out("The CoS will run its first-run interview on boot.");
