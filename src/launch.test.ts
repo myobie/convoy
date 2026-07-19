@@ -24,6 +24,21 @@ describe("native launch command builders (cold-start boot-prompt)", () => {
     expect(c.startsWith("exec codex")).toBe(true);
   });
 
+  it("harnessCommand model: --model '<id>' inserted for claude + codex; omitted → byte-identical to today", () => {
+    const prompt = bootPrompt("worker");
+    // claude: after --permission-mode, single-quoted (shell-safe), before the boot prompt.
+    expect(harnessCommand("claude", "bypassPermissions", prompt, "claude-fable-5")).toBe(
+      `exec claude --permission-mode bypassPermissions --model 'claude-fable-5' '${prompt}'`,
+    );
+    // codex: after the bypass flag.
+    expect(harnessCommand("codex", "bypassPermissions", prompt, "gpt-5")).toBe(
+      `exec codex --dangerously-bypass-approvals-and-sandbox --model 'gpt-5' '${prompt}'`,
+    );
+    // BACKWARD-COMPAT: null/undefined model → exactly the no-model command (existing agents unaffected).
+    expect(harnessCommand("claude", "bypassPermissions", prompt, null)).toBe(harnessCommand("claude", "bypassPermissions", prompt));
+    expect(harnessCommand("codex", "bypassPermissions", prompt, undefined)).toBe(harnessCommand("codex", "bypassPermissions", prompt));
+  });
+
   it("bootPrompt: cos gets the first-run-interview variant; others get the worker boot", () => {
     expect(bootPrompt("chief-of-staff")).toContain("first-run interview");
     expect(bootPrompt("worker")).toContain("stand by for work");
@@ -58,6 +73,7 @@ describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
     permanentOverride: null,
     prefix: "silber",
     configDir: null,
+    model: null,
     ...over,
   });
 
@@ -309,6 +325,7 @@ describe("writeContextFiles — clean-worktree wiring (convoy must not dirty a r
       permanentOverride: null,
       prefix: null,
       configDir: null,
+      model: null,
     };
   }
 
@@ -423,6 +440,7 @@ describe("convoy add clean-worktree — pty.toml + settings + context, EVERY aut
       permanentOverride: null,
       prefix: null,
       configDir: null,
+      model: null,
     };
   }
 

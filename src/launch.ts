@@ -102,10 +102,13 @@ function hookRefs(): { stBin: string; sessionStart: string; preCompact: string; 
 /** The agent's main harness session command: a COLD start — no auto-poker — handing the harness the
  *  INITIAL BOOT-RITUAL PROMPT as its first arg (single-quoted so `sh -c` passes it as one argument).
  *  claude gates on `--permission-mode`; codex, which runs unattended like every other agent, bypasses
- *  approvals + sandbox (the parallel to claude's bypass posture). */
-export function harnessCommand(harness: Harness, permissionMode: string, prompt: string): string {
-  if (harness === "codex") return `exec codex --dangerously-bypass-approvals-and-sandbox '${prompt}'`;
-  return `exec claude --permission-mode ${permissionMode} '${prompt}'`;
+ *  approvals + sandbox (the parallel to claude's bypass posture). `model` (null → the harness default,
+ *  today's behavior) adds `--model '<id>'` — single-quoted for `sh -c`, and the id is charset-validated
+ *  upstream (isValidModel) so the quotes can't be broken out of. Both harnesses accept `--model`. */
+export function harnessCommand(harness: Harness, permissionMode: string, prompt: string, model?: string | null): string {
+  const modelFlag = model ? ` --model '${model}'` : "";
+  if (harness === "codex") return `exec codex --dangerously-bypass-approvals-and-sandbox${modelFlag} '${prompt}'`;
+  return `exec claude --permission-mode ${permissionMode}${modelFlag} '${prompt}'`;
 }
 
 /** The ding sidecar command — pokes the agent's claude session when its bus inbox gets mail. Points at
@@ -150,7 +153,7 @@ export function writePtyToml(dir: string, spec: AgentSpec, opts?: { spawner?: st
     sessions: {
       [HARNESS_SESSION_KEY[spec.harness]]: {
         id: harnessId,
-        command: harnessCommand(spec.harness, specPermissionMode(spec), bootPrompt(spec.role)),
+        command: harnessCommand(spec.harness, specPermissionMode(spec), bootPrompt(spec.role), spec.model),
         tags: { role: "agent", ...(permanent ? { strategy: "permanent" } : {}), ...stTag, ...agentTags },
         env: harnessEnv,
       },

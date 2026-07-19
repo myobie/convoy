@@ -25,6 +25,10 @@ export interface AgentSpec {
    *  Relocates Claude Code's WHOLE config (auth + settings + skills), so the dir must be pre-seeded with the
    *  auth bits (credentials + settings.json + the ~/.claude.json trust entry) or the agent can't make calls. */
   configDir: string | null;
+  /** Per-agent model id passed to the harness (`claude --model <id>` / `codex --model <id>`); null = the
+   *  harness default (today's behavior). A free-form string (model ids churn), but charset-validated
+   *  (`isValidModel`) because it is interpolated into the `sh -c` launch command. */
+  model: string | null;
 }
 
 /** INTERIM POSTURE: every agent launches `bypassPermissions`. Unattended agents (esp. workers) stall
@@ -72,6 +76,15 @@ export function resolvedPersonaPath(s: AgentSpec): string | null {
 /** Valid identity shape: lowercase alnum plus `. _ -`, starting alnum. */
 export function isValidIdentity(id: string): boolean {
   return /^[a-z0-9][a-z0-9._-]*$/.test(id);
+}
+
+/** Valid model id shape — a conservative, SHELL-SAFE charset (the id is interpolated into the `sh -c`
+ *  launch command): starts alphanumeric, then letters/digits and `. _ : / -`. Covers every real id
+ *  (`claude-fable-5`, `claude-opus-4-8`, `us.anthropic.claude-opus-4`, `openai/gpt-5`, `gpt-5`, `o3`, and
+ *  bare aliases like `opus`) while rejecting whitespace, quotes, and shell metacharacters. Intentionally
+ *  NOT a fixed allow-list of known models — those churn; the harness validates the actual id. */
+export function isValidModel(id: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(id);
 }
 
 function isDir(p: string): boolean {
@@ -129,6 +142,7 @@ export function preflight(s: AgentSpec, existing: string[]): Preflight {
     ["permission-mode", specPermissionMode(s)],
     ["permanent", specPermanent(s) ? "yes" : "no"],
     ["persona", resolvedPersonaPath(s) ?? "(none)"],
+    ["model", s.model ?? "(harness default)"],
     ["network", s.networkRoot ?? "(default)"],
     ["directory", s.workingDir ?? "(current)"],
   ];

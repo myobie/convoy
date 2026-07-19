@@ -127,7 +127,7 @@ function printHelp(): void {
       "  ls (default)   list the convoy's members [--tree = spawn-parentage tree + cross-machine liveness (synced status-mtime + host) --stale-after <ms> --live-only --json --network]\n" +
       "  doctor         setup-readiness suite: prove your setup can do real agent work [--quick = preflight only; --full = real CoS→sup→worker org proof (slower)]\n" +
       "  init [name|dir] interactive, narrated: stand up a network (name → megarepo → CoS), NAME lives at <home>/<name> [--megarepo <path> --quiet --json --yes --no-channel]\n" +
-      "  add <role>     DECLARE an agent — write its agent file into the synced catalog; NO launch (convoy up runs it) [--identity --host --harness claude|codex --transport ding|mcp --mcp --network --dir --persona --permanent --dry-run --force]\n" +
+      "  add <role>     DECLARE an agent — write its agent file into the synced catalog; NO launch (convoy up runs it) [--identity --host --harness claude|codex --model <id> --transport ding|mcp --mcp --network --dir --persona --permanent --dry-run --force]\n" +
       "  render <id>    materialize an agent's worktree overlay from its catalog agent file — NO launch, NO bus (declarative: add=declare · render=materialize · up=reconcile) [--dir <workspace> --network --dry-run]\n" +
       "  cos --repo <d> bootstrap a Chief of Staff\n" +
       "  up <network>   host a network in the foreground (TCC anchor + supervisor + flapping-cap) [--once = one-shot reconcile-and-exit (adopts live sessions, no daemon) --json]\n" +

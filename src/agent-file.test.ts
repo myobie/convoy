@@ -58,6 +58,15 @@ strategy  = "permanent"
     expect(parseAgentFile(agentFileToToml(af))).toEqual(af);
     expect(parseAgentFile(`identity="w"\nrole="worker"\n`).retired).toBeUndefined();
   });
+
+  it("parses + round-trips an optional model, and rejects a shell-unsafe one", () => {
+    const af = parseAgentFile(`identity="iroh-claude"\nrole="worker"\nmodel="claude-fable-5"\n`);
+    expect(af.model).toBe("claude-fable-5");
+    expect(parseAgentFile(agentFileToToml(af))).toEqual(af); // write → read round-trips
+    expect(parseAgentFile(`identity="w"\nrole="worker"\n`).model).toBeUndefined(); // omitted → absent (harness default)
+    expect(() => parseAgentFile(`identity="w"\nrole="worker"\nmodel="bad; rm -rf"\n`)).toThrow(/model/); // shell metachars
+    expect(() => parseAgentFile(`identity="w"\nrole="worker"\nmodel="a b"\n`)).toThrow(/model/); // whitespace
+  });
 });
 
 describe("agentFileToSpec — compile intent → AgentSpec", () => {
@@ -86,6 +95,11 @@ describe("agentFileToSpec — compile intent → AgentSpec", () => {
     expect(agentFileToSpec({ ...base, workspace: "/from-file" }, { networkRoot: null }).workingDir).toBe("/from-file");
     expect(agentFileToSpec({ ...base, workspace: "/from-file" }, { networkRoot: null, workspace: "/override" }).workingDir).toBe("/override");
     expect(agentFileToSpec(base, { networkRoot: null }).workingDir).toBe(null);
+  });
+
+  it("threads model → spec.model (omitted → null, the harness default)", () => {
+    expect(agentFileToSpec({ ...base, model: "claude-fable-5" }, { networkRoot: "/net" }).model).toBe("claude-fable-5");
+    expect(agentFileToSpec(base, { networkRoot: "/net" }).model).toBe(null);
   });
 });
 

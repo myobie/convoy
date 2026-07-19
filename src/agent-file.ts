@@ -10,7 +10,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as tomlParse, stringify as tomlStringify } from "smol-toml";
 import { parseRole, type Role } from "./role.ts";
-import type { AgentSpec, Harness, Transport } from "./agent-spec.ts";
+import { isValidModel, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
 
 /** The declarative intent for one agent. A clean SUBSET of what render+add+up will need — extend, don't
  *  reshape (piece 2 = `convoy add` authors these; piece 3 = `convoy up` host-filters + launches). */
@@ -26,6 +26,9 @@ export interface AgentFile {
   workspace?: string;
   /** claude | codex. Omit → claude. */
   harness?: Harness;
+  /** Per-agent model id (`claude --model <id>` / `codex --model <id>`). Omit → the harness default (today's
+   *  behavior). Free-form (model ids churn) but charset-validated on parse — it lands in the launch command. */
+  model?: string;
   /** ding | mcp. Omit → ding. */
   transport?: Transport;
   /** Optional persona override (a path). Omit → the role's default persona. */
@@ -75,6 +78,8 @@ export function parseAgentFile(text: string): AgentFile {
   if (transportRaw !== undefined && transportRaw !== "ding" && transportRaw !== "mcp") throw new Error(`invalid \`transport\` "${transportRaw}" (want: ding | mcp)`);
   const strategyRaw = str("strategy");
   if (strategyRaw !== undefined && strategyRaw !== "permanent") throw new Error(`invalid \`strategy\` "${strategyRaw}" (want: permanent, or omit)`);
+  const modelRaw = str("model");
+  if (modelRaw !== undefined && !isValidModel(modelRaw)) throw new Error(`invalid \`model\` "${modelRaw}" — use letters, digits, and . _ : / - (start alphanumeric), e.g. claude-fable-5`);
 
   const af: AgentFile = { identity, role };
   const host = str("host");
@@ -86,6 +91,7 @@ export function parseAgentFile(text: string): AgentFile {
   const workspace = str("workspace");
   if (workspace) af.workspace = workspace;
   if (harnessRaw) af.harness = harnessRaw as Harness;
+  if (modelRaw) af.model = modelRaw;
   if (transportRaw) af.transport = transportRaw as Transport;
   const persona = str("persona");
   if (persona) af.persona = persona;
@@ -105,6 +111,7 @@ export function agentFileToToml(af: AgentFile): string {
   if (af.host) doc["host"] = af.host;
   if (af.workspace) doc["workspace"] = af.workspace;
   if (af.harness) doc["harness"] = af.harness;
+  if (af.model) doc["model"] = af.model;
   if (af.transport) doc["transport"] = af.transport;
   if (af.persona) doc["persona"] = af.persona;
   if (af.strategy) doc["strategy"] = af.strategy;
@@ -151,6 +158,7 @@ export function agentFileToSpec(af: AgentFile, opts: { networkRoot: string | nul
     permanentOverride: af.strategy === "permanent" ? true : null,
     prefix: af.host ?? null,
     configDir: null,
+    model: af.model ?? null,
   };
 }
 
@@ -166,6 +174,7 @@ host      = "my-hostname"       # which machine runs it (the <host> in <host>.<i
 workspace = "/abs/path/to/repo" # the repo/worktree to run in (where render materializes the overlay)
 harness   = "claude"            # claude | codex   (default: claude)
 transport = "ding"              # ding | mcp       (default: ding)
+# model = "claude-fable-5"             # optional — per-agent model (claude/codex --model); omit → harness default
 # persona = "/abs/path/to/persona.md"  # optional — omit to use the role's default persona
 # strategy = "permanent"               # optional — respawned by convoy up (piece 3); omit → derive from role
 `;
