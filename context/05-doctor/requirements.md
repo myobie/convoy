@@ -47,6 +47,8 @@ observation.
 
 ### Must Prove Real Capability
 
+Refines [CV-R16](../requirements.md) — checks exercise the real path.
+
 - **DOC-R01 End-to-end proof:** Doctor must prove that this machine can stand up
   a network, launch an agent, deliver a message to it, and tear it down — by
   doing each of those things, not by inspecting the conditions for them.
@@ -60,6 +62,8 @@ observation.
 
 ### Must Be Safe To Run
 
+Refines [CV-R18](../requirements.md), proving [NET-R09](../01-network/requirements.md).
+
 - **DOC-R04 Isolated execution:** Every check must run in its own throwaway
   network with its own bus root and session registry, relying on the isolation
   guarantee of NET-R09.
@@ -72,6 +76,8 @@ observation.
   fails or aborts.
 
 ### Must Be Honest
+
+Refines [CV-R15](../requirements.md) — verified, failed, and undetermined stay distinct.
 
 - **DOC-R07 Three outcomes, not two:** Every check must be able to report pass,
   fail, or could-not-verify. A condition doctor cannot establish must report as
@@ -91,6 +97,8 @@ observation.
   result.
 
 ### Must Be Actionable
+
+Refines [CV-R17](../requirements.md) — failures name their fix.
 
 - **DOC-R12 Every check states what it proves:** A check must name the property a
   pass establishes, so a reader learns what was verified and not merely that

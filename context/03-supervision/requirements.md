@@ -12,9 +12,13 @@ process that misbehaves.
 
 ## Assumptions
 
+Upstream: [CV-A01](../requirements.md) makes the synced directory the
+coordination substrate, and [CV-A02](../requirements.md) makes sessions mortal.
+This node adds what those imply for the supervisor's own lifecycle.
+
 - **SUP-A01 The synced folder is the scheduler:** No supervisor talks to another
-  machine. A declaration reaches a machine by synchronizing, and that machine's
-  own loop decides to act on it.
+  machine. Each machine's own loop decides what to act on, so there is no
+  scheduling authority to elect, fail over, or keep consistent.
 - **SUP-A02 Agents outlive their supervisor:** An agent session is a
   long-running process holding real work in progress, and restarting or upgrading
   the supervisor is a routine operation.
@@ -44,6 +48,8 @@ process that misbehaves.
 
 ### Must Reconcile Declaratively
 
+Refines [CV-R10](../requirements.md) — idempotent reconciliation, given the desired/actual split this node defines.
+
 - **SUP-R01 Desired against actual:** Supervision must compute what should run
   from the catalog and what does run from the session registry, and must act only
   on the difference.
@@ -71,6 +77,8 @@ process that misbehaves.
 
 ### Must Handle Lifecycle Correctly
 
+Refines [CV-R12](../requirements.md) (death is recoverable) against [CV-C03](../requirements.md) (decommission is an edit).
+
 - **SUP-R08 Decommission by edit:** A declaration marked retired must cause any
   live session for that agent to be torn down and must never be launched. Retired
   and respawn strategy are independent axes, so a retired permanent agent is
@@ -91,6 +99,8 @@ process that misbehaves.
   must be distinguishable from a repeat of the same failing command.
 
 ### Must Not Destroy Work
+
+Refines [CV-R13](../requirements.md) — observation does not destroy.
 
 - **SUP-R13 Stopping supervision detaches:** Stopping or crashing the supervisor
   must leave every session running. Nothing about the supervisor's own lifecycle

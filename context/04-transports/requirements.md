@@ -49,6 +49,8 @@ supervision's input rather than its concern.
 
 ### Must Be Derived, Never Hand-Wired
 
+Refines [CV-R02](../requirements.md) and [CV-T03](../requirements.md) — derived wiring outranks declared wiring.
+
 - **TRN-R04 The transport is derived:** The effective transport of a session must
   be computed from the agent's declaration and its harness. It must not be
   possible to obtain a session whose transport was set by any path other than that
@@ -63,6 +65,8 @@ supervision's input rather than its concern.
   error, and it must not be silent.
 
 ### Must Survive Restart
+
+Refines [CV-R06](../requirements.md) against [CV-C05](../requirements.md) — a running session carries the wiring it launched with.
 
 - **TRN-R07 Sidecar wiring is restart-durable:** Everything the companion session
   needs to reach the correct network's bus must survive a session restart. Given

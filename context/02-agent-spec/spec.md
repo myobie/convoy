@@ -80,7 +80,7 @@ its machine and the agent would never launch with no error anywhere.
 `src/identity.ts` composes three bounds from three owners:
 
 - charset and reserved words — smalltalk's `isAgent`, imported rather than
-  reimplemented (SPEC-R13, SPEC-C02);
+  reimplemented (SPEC-R13, and [CV-C01](../requirements.md));
 - length — pty's socket bound, specified in
   [01-network](../01-network/spec.md) (NET-R11 through NET-R13);
 - counter shape — convoy's own, since convoy owns what a durable declared name

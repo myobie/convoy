@@ -46,6 +46,8 @@ legacy shape. This node applies the second to the catalog's directory layout.
 
 ### Must Define One Declaration Format
 
+Refines [CV-R01](../requirements.md) and [CV-R02](../requirements.md) — this node states what the declaration may carry and how the formats relate.
+
 - **SPEC-R01 One file, one agent:** Each agent is declared by exactly one file.
   Two files declaring the same identity within a network is an error and both must
   be reported rather than one silently winning.
@@ -77,6 +79,8 @@ legacy shape. This node applies the second to the catalog's directory layout.
 
 ### Must Discover Declarations Robustly
 
+Refines [CV-R14](../requirements.md) — containment of one bad declaration, applied to catalog discovery.
+
 - **SPEC-R08 Recursive discovery:** Discovery must find declarations anywhere
   beneath the catalog, at any depth and under any filename, provided the file
   carries a recognized format extension.
@@ -96,6 +100,8 @@ legacy shape. This node applies the second to the catalog's directory layout.
 
 ### Must Constrain Names
 
+Refines [CV-R04](../requirements.md), [CV-R03](../requirements.md), and [CV-R07](../requirements.md) — the grammar, when it is checked, and which names may hold durable state.
+
 - **SPEC-R13 One identity grammar:** An identity convoy accepts must be an
   identity the bus accepts: lowercase letters, digits, `.` and `-`, beginning and
   ending alphanumeric, no underscore, and none of the reserved bus names. Convoy
@@ -114,18 +120,21 @@ legacy shape. This node applies the second to the catalog's directory layout.
 
 ### Must Support Correction
 
+Refines [CV-R08](../requirements.md), [CV-R09](../requirements.md), and [CV-R11](../requirements.md) — rename, stale references, and completable partial changes.
+
 - **SPEC-R17 Rename preserves continuity:** Renaming an agent must move both its
   declaration and its entire durable bus presence — context, decisions, archive,
   inbox, and status — so that mail in flight at rename time is delivered under the
   new name and nothing the agent externalized is orphaned.
 - **SPEC-R18 Rename is diagnosable, not redirecting:** A renamed-away identity
   must leave a marker that convoy resolves for listing, uniqueness, and rename
-  idempotency. Because the bus has no redirect mechanism (SPEC-C03), a peer holding
+  idempotency. Because the bus has no redirect mechanism
+  ([CV-C04](../requirements.md)), a peer holding
   the old name and sending to it creates an unread folder; convoy must make that
   situation visible rather than claim to prevent it. The marker must not cause the
   old name to reappear in bus agent listings.
 - **SPEC-R19 Removal is an edit:** Because the catalog converges by union
-  (SPEC-C04), decommissioning an agent must be expressed as a change to its
+  ([CV-C03](../requirements.md)), decommissioning an agent must be expressed as a change to its
   declaration rather than as a file deletion.
 - **SPEC-R20 Rerunnable declaration:** Declaring, rendering, and renaming must be
   safe to re-run. A partially completed operation must complete on a second run

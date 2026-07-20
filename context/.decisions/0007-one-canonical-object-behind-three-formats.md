@@ -10,12 +10,18 @@ rules, will drift, and the drift will be in edge cases nobody writes tests for �
 whether a bare node means `true`, whether a repeated block is a list, whether a
 missing field is absent or empty.
 
-There is a second problem specific to KDL. TOML and JSON are key/value languages
-and map to a plain object with no design work. KDL is a node/argument/property
-language, and the published spec gives its examples only in TOML. So the KDL
-mapping — in particular, how `[pty.agent]` is spelled — is not written down
-anywhere. It has to be designed, and designed such that the three formats
-actually converge.
+There is a second problem, and it is worse than an omission. The published
+examples are not structurally identical to each other:
+
+- Its **KDL** nests every field under an `agent "<identity>"` node, so identity
+  is a positional argument rather than a field.
+- Its **JSON** and **TOML** are flat, with `identity` as an ordinary top-level
+  key.
+- Its **JSON** names the task table `ptys`; its TOML and KDL name it `pty`.
+
+So "three formats, identical meaning" does not survive a literal reading of the
+documents that illustrate it. An implementation cannot satisfy all three examples
+by decoding to one shape unless it reconciles them explicitly.
 
 ## Options
 
@@ -46,6 +52,13 @@ Repeated sibling nodes collapse to a list, which is how `[[render.file]]` spells
 in KDL; repeated *named* nodes merge into one table, so a table of tables can be
 written either way.
 
+Where the published examples disagree with each other, **both spellings are
+accepted** rather than one being declared correct. A lone top-level `agent` node
+is unwrapped into the flat form, and `ptys` is read as `pty`. Convoy is an
+implementation, not the spec's editor; picking a winner unilaterally would
+silently invalidate catalogs written against the other published example. The
+divergence is reported upstream instead.
+
 ## Consequences
 
 - Adding a fourth format is a decoder, not a semantics review.
@@ -63,8 +76,14 @@ written either way.
   a different implementation could map KDL differently and still claim
   conformance. This is a gap in the published spec rather than in convoy, and is
   worth proposing upstream.
+- Accepting both spellings means convoy cannot detect a spec that mixes them
+  incoherently, and it carries two code paths for one concept until the spec
+  converges. That cost is deliberate and expected to be temporary; the tests pin
+  both so a future convergence is a visible change rather than a silent one.
 
 ## Evidence
 
 - `src/spec-format.test.ts` decodes one document in all three formats and
-  asserts structural equality, then pins each individual mapping rule.
+  asserts structural equality, pins each individual mapping rule, and parses the
+  published spec's own KDL example verbatim — including its raw-string command
+  and its `agent "<identity>"` wrapper.

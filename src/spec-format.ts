@@ -56,7 +56,27 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  *  `[[x]]`, and it is resolved the same way — by what the consuming field expects (see `asArray`). */
 export function kdlToPlain(text: string): SpecDoc {
   const doc = kdlParse(text);
-  return nodesToPlain(doc.nodes as readonly KdlNode[]);
+  return unwrapAgentNode(nodesToPlain(doc.nodes as readonly KdlNode[]));
+}
+
+/** The published spec writes KDL as `agent "fabric-claude" { role "worker" … }` — the identity is the
+ *  node's positional argument and every other field nests inside — while its JSON and TOML examples are
+ *  FLAT (`identity` is an ordinary key at the top level). Those are not the same document shape, so the
+ *  "identical meaning" claim does not survive a literal reading of the examples.
+ *
+ *  Rather than pick a winner, both spellings are accepted: a lone top-level `agent` node is unwrapped into
+ *  the flat form, and flat KDL (`identity "fabric-claude"` at the top level) parses directly. Whichever the
+ *  spec settles on, catalogs written against either survive. */
+function unwrapAgentNode(doc: SpecDoc): SpecDoc {
+  const agent = doc["agent"];
+  if (Object.keys(doc).length !== 1 || !isPlainObject(agent)) return doc;
+  // `agent "x" { … }` maps to `{agent: {x: {…}}}` by the named-segment rule; a bare `agent { … }` has no
+  // identity to lift and is passed through as-is.
+  const names = Object.keys(agent);
+  const only = names[0];
+  const body = only === undefined ? undefined : agent[only];
+  if (names.length !== 1 || !isPlainObject(body)) return doc;
+  return { identity: only, ...body };
 }
 
 // Structural subset of @bgotink/kdl's AST that this mapping reads. Declared locally rather than imported

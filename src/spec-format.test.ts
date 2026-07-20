@@ -136,3 +136,54 @@ describe("asArray — one-or-many without a per-format branch", () => {
     expect(asArray("nope")).toEqual([]);
   });
 });
+
+describe("the PUBLISHED spec's own examples parse", () => {
+  // The spec's examples are not structurally identical to each other: its KDL nests everything under an
+  // `agent "<identity>"` node while its JSON and TOML are flat, and its JSON says `ptys` where the others
+  // say `pty`. Convoy accepts both spellings rather than picking a winner, so a catalog written against
+  // any published example works. These tests pin that, and would fail loudly if the spec converged.
+  const SPEC_KDL = `
+agent "fabric-claude" {
+  role       "worker"
+  supervisor "cos"
+  host       "silber"
+  workspace  "/repos/fabric"
+  transport  "ding"
+  retired   #false
+  prefix    "silber.fabric"
+
+  pty "agent" {
+    id      "silber.fabric-claude"
+    command #"exec claude --permission-mode bypassPermissions 'cold-start: run boot ritual, then stand by'"#
+    cwd     "."
+    tags role="agent" "st.network"="$CONVOY_NET"
+    env {
+      ST_AGENT "silber.fabric-claude"
+      ST_ROOT  "$CONVOY_NET/smalltalk"
+    }
+  }
+}
+`;
+
+  it("unwraps the spec's `agent \"<identity>\"` KDL node into the flat shape its TOML uses", () => {
+    const d = decodeSpecText(SPEC_KDL, "kdl");
+    expect(d["identity"]).toBe("fabric-claude");
+    expect(d["role"]).toBe("worker");
+    expect(d["supervisor"]).toBe("cos");
+    expect(d["retired"]).toBe(false);
+    expect((d["pty"] as Record<string, Record<string, unknown>>)["agent"]?.["cwd"]).toBe(".");
+  });
+
+  it("reads a KDL raw string command without mangling its embedded quotes", () => {
+    const pty = decodeSpecText(SPEC_KDL, "kdl")["pty"] as Record<string, Record<string, unknown>>;
+    expect(pty["agent"]?.["command"]).toBe("exec claude --permission-mode bypassPermissions 'cold-start: run boot ritual, then stand by'");
+  });
+
+  it("still accepts FLAT kdl, so neither spelling is locked out while the spec settles", () => {
+    expect(decodeSpecText(`identity "fabric"\nrole "worker"\n`, "kdl")["identity"]).toBe("fabric");
+  });
+
+  it("leaves a bare `agent { … }` node alone rather than inventing an identity", () => {
+    expect(decodeSpecText(`agent {\n  role "worker"\n}`, "kdl")["identity"]).toBeUndefined();
+  });
+});

@@ -188,7 +188,9 @@ export function parseAgentFile(text: string, format: SpecFormat = "toml", idCont
     af.bin = bin;
   }
 
-  const ptyRaw = doc["pty"];
+  // The spec's JSON example says `ptys` where its TOML and KDL examples say `pty`. Both are accepted
+  // rather than guessing which is normative; see the spec-divergence note in .decisions/0007.
+  const ptyRaw = doc["pty"] ?? doc["ptys"];
   if (ptyRaw && typeof ptyRaw === "object" && !Array.isArray(ptyRaw)) {
     const blocks: Record<string, PtyBlock> = {};
     for (const [key, v] of Object.entries(ptyRaw as Record<string, unknown>)) {

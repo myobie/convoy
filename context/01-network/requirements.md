@@ -36,6 +36,7 @@ This node refines the first with the portability rule the fleet imposes.
   long path legitimately shrinks the room agents have for names. Convoy reports
   the reduced budget rather than silently truncating names or forbidding deep
   paths.
+
 The catalog's no-delete convergence is [CV-C03](../requirements.md); this node
 owns only which of its children that convergence covers (NET-R10).
 
@@ -81,6 +82,8 @@ owns only which of its children that convergence covers (NET-R10).
 
 ### Must Keep Networks Isolated
 
+Refines [CV-R18](../requirements.md) — this node states the property; [05-doctor](../05-doctor/requirements.md) proves it.
+
 - **NET-R09 No cross-network effect:** An operation performed against one network
   must produce no observable change in any other network — no session created or
   destroyed, no file written, no bus folder touched. This must be verifiable by
@@ -91,6 +94,8 @@ owns only which of its children that convergence covers (NET-R10).
   interpreted as describing another machine's process.
 
 ### Must Respect The Name Budget
+
+Refines [CV-R03](../requirements.md) (declare-time validation) against [CV-C02](../requirements.md) (the socket bound).
 
 - **NET-R11 Path length is part of the contract:** The number of bytes available
   for an agent's name is a property of the network, derived from where its session

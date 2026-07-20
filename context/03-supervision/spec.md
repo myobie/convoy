@@ -60,7 +60,8 @@ orthogonal signals rather than overload one.
 
 Retirement is an edit rather than a deletion because the catalog converges by
 union — the constraint is stated in
-[02-agent-spec](../02-agent-spec/requirements.md) (SPEC-C04, SPEC-R19).
+[CV-C03](../requirements.md) and applied by
+[02-agent-spec](../02-agent-spec/requirements.md) (SPEC-R19).
 
 ## Death and recovery
 

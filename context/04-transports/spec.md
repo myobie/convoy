@@ -27,17 +27,21 @@ therefore load-bearing rather than incidental, which is what TRN-R03 states.
 
 ## Derivation
 
-`writePtyToml` computes the effective transport in one place:
+One rule decides the effective transport, and it is stated twice in two
+complementary positions:
 
 ```text
 effectiveTransport = harness === "codex" ? "ding" : declaredTransport
 ```
 
-`usesDing` is the same rule expressed as a predicate — `harness === "codex" ||
-transport === "ding"` — and every session-writing path consults it rather than
-reading the declared field. This is the mechanism for TRN-R04 and TRN-R05: there
-is no code path from a declaration to a launched session that bypasses the
-derivation, so an unserviceable combination cannot reach a spawn.
+`preflight` in `src/agent-spec.ts` computes it for the reported and tagged value,
+so what an operator is shown is the transport that will actually run. `usesDing`
+in `src/launch.ts` expresses the same rule as a predicate — `harness === "codex"
+|| transport === "ding"` — and every session-writing path in `writePtyToml`
+consults it rather than reading the declared field. This is the mechanism for
+TRN-R04 and TRN-R05: there is no code path from a declaration to a launched
+session that bypasses the derivation, so an unserviceable combination cannot
+reach a spawn.
 
 The correction is reported, not thrown (TRN-R06). Requesting the in-process
 transport on `codex` emits `codex has no MCP transport — it always runs
