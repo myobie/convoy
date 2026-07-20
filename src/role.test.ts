@@ -39,3 +39,14 @@ describe("Role table (ported from Role.swift + AgentSpecTests)", () => {
     expect(personaBaseFilename("chief-of-staff")).toBe("chief-of-staff.md");
   });
 });
+
+describe("the agent spec's role names", () => {
+  it("accepts `root` as the spec spells it, mapping to convoy's chief-of-staff", () => {
+    // The published field table says `root` — a spec written to it must not be rejected outright.
+    expect(parseRole("root")).toBe("chief-of-staff");
+  });
+
+  it("accepts every other role the spec names, verbatim", () => {
+    for (const r of ["supervisor", "worker", "technical-manager"]) expect(parseRole(r)).toBe(r);
+  });
+});
