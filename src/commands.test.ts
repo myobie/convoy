@@ -2,7 +2,7 @@ import { afterEach, describe, it, expect } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentForest, checkPtyRoot, existingPtyTomlIdentity, formatActivityAge, hostPrefixedIdentity, networkEnvExports, optValue, pathTooLongMessage, positionals, PTY_ROOT_MAX_BYTES, readAgentPresence, renderForest, resolveNetworkEnv, resolveNetworkRoot, retireInCatalog, shellQuote, shortHost, unknownFlag, type LocalInfo } from "./commands.ts";
+import { agentForest, checkPtyRoot, initExitCode, existingPtyTomlIdentity, formatActivityAge, hostPrefixedIdentity, networkEnvExports, optValue, pathTooLongMessage, positionals, PTY_ROOT_MAX_BYTES, readAgentPresence, renderForest, resolveNetworkEnv, resolveNetworkRoot, retireInCatalog, shellQuote, shortHost, unknownFlag, type LocalInfo } from "./commands.ts";
 import { shortHostname } from "./agent-spec.ts";
 import { convoyHome, defaultConvoyNetwork, isNetworkName, networkDirForName, networkDirOfStRoot } from "./paths.ts";
 import { agentFilePath, catalogDir, readAgentFile, writeAgentFile } from "./agent-file.ts";
@@ -405,5 +405,25 @@ describe("cross-machine liveness (item 2) — readAgentPresence + shortHost", ()
     expect(shortHost("silber")).toBe("silber");
     expect(shortHost("HETZ.local")).toBe("hetz");
     expect(shortHost("  hetz  ")).toBe("hetz");
+  });
+});
+
+describe("initExitCode — `convoy init` must NOT report success when the root agent failed to come up", () => {
+  it("ACCEPTANCE: a FAILED CoS bootstrap makes init exit NONZERO (was: printed the error, then returned 0)", () => {
+    // The bug: cmdInit ran `cosCode = await cmdCos(...)`, printed "CoS bootstrap did not complete" on a
+    // nonzero rc, and then fell through to an unconditional `return 0` — so `convoy init && convoy up`
+    // saw green and moved on to a network with an EMPTY catalog.
+    expect(initExitCode(1)).not.toBe(0);
+    expect(initExitCode(1)).toBe(1);
+  });
+  it("propagates cmdCos's actual rc (2 = a usage error, distinct from 1 = a launch failure)", () => {
+    expect(initExitCode(2)).toBe(2);
+  });
+  it("a SUCCESSFUL CoS bootstrap exits 0", () => {
+    expect(initExitCode(0)).toBe(0);
+  });
+  it("no CoS requested (null — the default, and every non-interactive run) exits 0: the structure IS the deliverable", () => {
+    // The hard negative control: this fix must not turn a plain `convoy init` (no CoS) into a failure.
+    expect(initExitCode(null)).toBe(0);
   });
 });

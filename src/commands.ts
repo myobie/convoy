@@ -613,19 +613,40 @@ export async function cmdInit(args: string[]): Promise<number> {
     err(`personas: ${e instanceof Error ? e.message : String(e)} (add/cos will retry)`);
   }
 
-  // 4. CoS bootstrap (interactive only — optional).
+  // 4. CoS bootstrap (interactive only — optional). `null` = the user never asked for one (the default and
+  // the whole non-interactive path); a number = cmdCos actually ran and this is its rc.
+  let cosCode: number | null = null;
   if (interactive && (await askYesNo("Bootstrap a Chief of Staff for this network now?", false))) {
     const repo = await ask("CoS repo path (its durable memory lives here)", join(dir, "cos"));
     say("→ Bootstrapping the Chief of Staff…");
-    const cosCode = await cmdCos(["--repo", repo, "--network", dir]);
+    cosCode = await cmdCos(["--repo", repo, "--network", dir]);
     if (cosCode !== 0) err("CoS bootstrap did not complete — you can run `convoy cos --repo <dir>` later.");
   }
 
+  const rc = initExitCode(cosCode);
+  if (rc !== 0) {
+    // Don't tell the user the network "is ready" — they asked for a network WITH a root agent, the root
+    // agent failed to come up, and the catalog is empty. `convoy doctor` next would just fail confusingly.
+    err(`Network structure was created at ${dir}, but its Chief of Staff was NOT bootstrapped — the network has no agents.`);
+    err(`→ next: fix the cause above, then \`convoy cos --repo <dir> --network ${dir}\`.`);
+    return rc;
+  }
   const addHint = choice ? ` --network ${dir}` : "";
   say(`✓ Network "${networkNameFromDir(dir)}" is ready at ${dir}.`);
   say(`  Next: run \`convoy doctor\` to prove it's set up correctly and can do real work — or add an agent with \`convoy add <role> --identity <id>${addHint}\`.`);
   if (json) out(JSON.stringify({ network: networkNameFromDir(dir), dir, stRoot: layout.stRoot, ptyRoot: layout.ptyRoot, worktrees: layout.worktrees, ...(megarepo ? { megarepo } : {}) }));
   return 0;
+}
+
+/** `convoy init`'s exit code, given the CoS bootstrap's outcome: `null` when the user didn't ask for a CoS
+ *  (nothing was attempted → the network structure IS the whole deliverable → 0), else cmdCos's rc.
+ *
+ *  The bug this closes: init used to PRINT "CoS bootstrap did not complete" and then unconditionally
+ *  `return 0` — reporting SUCCESS for a bootstrap that failed and left an EMPTY catalog behind. A caller
+ *  that scripts `convoy init && convoy up` saw green and moved on to a network with no agents. A failed
+ *  bootstrap must not report success. Pure → unit-testable (cmdInit's CoS branch is TTY-gated). */
+export function initExitCode(cosCode: number | null): number {
+  return cosCode === null ? 0 : cosCode;
 }
 
 export async function cmdPersonas(args: string[]): Promise<number> {
