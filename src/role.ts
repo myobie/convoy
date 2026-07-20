@@ -7,30 +7,27 @@ export type PermissionMode = "bypassPermissions" | "auto" | "acceptEdits" | "pla
 
 export const ROLES: readonly Role[] = ["chief-of-staff", "supervisor", "worker", "technical-manager"];
 
-/** Friendly aliases so `convoy add cos …` / `convoy add tm …` just work. */
+/** Friendly aliases so `convoy add cos …` / `convoy add tm …` just work. A table rather than a `switch`
+ *  so the accepted spellings are readable DATA: `parseRole` and the `convoy add <role>` completions both
+ *  read this one list instead of retyping it (see src/command-table.ts). */
+export const ROLE_ALIASES: Readonly<Record<string, Role>> = {
+  chiefofstaff: "chief-of-staff",
+  cos: "chief-of-staff",
+  spawner: "chief-of-staff",
+  sup: "supervisor",
+  wk: "worker",
+  technicalmanager: "technical-manager",
+  tm: "technical-manager",
+  manager: "technical-manager",
+};
+
+/** Every spelling `convoy add <role>` accepts: the canonical roles plus the aliases above. */
+export const ROLE_SPELLINGS: readonly string[] = [...ROLES, ...Object.keys(ROLE_ALIASES)];
+
 export function parseRole(raw: string): Role | null {
-  switch (raw.toLowerCase()) {
-    case "chief-of-staff":
-    case "chiefofstaff":
-    case "cos":
-    case "spawner":
-      return "chief-of-staff";
-    case "supervisor":
-    case "sup":
-      return "supervisor";
-    case "worker":
-    case "wk":
-      return "worker";
-    case "technical-manager":
-    case "technicalmanager":
-    case "tm":
-    case "manager":
-      return "technical-manager";
-    default: {
-      const r = raw.toLowerCase();
-      return (ROLES as readonly string[]).includes(r) ? (r as Role) : null;
-    }
-  }
+  const r = raw.toLowerCase();
+  if ((ROLES as readonly string[]).includes(r)) return r as Role;
+  return ROLE_ALIASES[r] ?? null;
 }
 
 /** Whether this role spawns/manages other agents (elevated permissions). Workers don't. */
