@@ -163,6 +163,24 @@ export function emitWrites(obj: Record<string, unknown>, human: string, json: bo
   return { stderr: [`${human}\n`], stdout: json ? [`${JSON.stringify(obj)}\n`] : [] };
 }
 
+/** The other half of the one-line-once contract: binding `emitWrites` to the two real sinks. `emitWrites`
+ *  DECIDES what goes where; this is what actually writes it — and the shipped double-log bug lived here, in
+ *  the wiring, not in the decision. Left as an inline closure in `up()` the wiring was unreachable from a
+ *  test, so the whole bug could be reintroduced (write `human` to both streams) with the suite untouched and
+ *  `tsc` clean. Sinks are injectable for exactly that reason: a test drives the REAL emitter and counts the
+ *  lines each stream received. */
+export function makeEmit(
+  json: boolean,
+  out: (s: string) => void = (s) => void process.stdout.write(s),
+  err: (s: string) => void = (s) => void process.stderr.write(s),
+): (obj: Record<string, unknown>, human: string) => void {
+  return (obj, human) => {
+    const w = emitWrites(obj, human, json);
+    for (const s of w.stderr) err(s);
+    for (const s of w.stdout) out(s);
+  };
+}
+
 export async function up(opts: UpOptions): Promise<number> {
   const root = resolveRoot(opts.network);
   const interval = opts.reconcileInterval ?? 30;
@@ -192,11 +210,7 @@ export async function up(opts: UpOptions): Promise<number> {
 
   // The human line always goes to stderr; stdout carries the JSONL stream when --json, and NOTHING
   // otherwise (writing the human line to both streams printed every supervisor line twice — see emitWrites).
-  const emit = (obj: Record<string, unknown>, human: string): void => {
-    const w = emitWrites(obj, human, json);
-    for (const s of w.stderr) process.stderr.write(s);
-    for (const s of w.stdout) process.stdout.write(s);
-  };
+  const emit = makeEmit(json);
 
   emit(
     { type: "up", network: root, reconcileInterval: interval },

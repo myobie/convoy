@@ -4,6 +4,10 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentForest, checkPtyRoot, initExitCode, existingPtyTomlIdentity, formatActivityAge, hostPrefixedIdentity, networkEnvExports, optValue, pathTooLongMessage, positionals, PTY_ROOT_MAX_BYTES, readAgentPresence, renderForest, resolveNetworkEnv, resolveNetworkRoot, retireInCatalog, shellQuote, shortHost, unknownFlag, type LocalInfo } from "./commands.ts";
 import { shortHostname } from "./agent-spec.ts";
+import { functionBody } from "./source-guard.ts";
+import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { convoyHome, defaultConvoyNetwork, isNetworkName, networkDirForName, networkDirOfStRoot } from "./paths.ts";
 import { agentFilePath, catalogDir, readAgentFile, writeAgentFile } from "./agent-file.ts";
 import type { Agent } from "./bus.ts";
@@ -425,5 +429,34 @@ describe("initExitCode — `convoy init` must NOT report success when the root a
   it("no CoS requested (null — the default, and every non-interactive run) exits 0: the structure IS the deliverable", () => {
     // The hard negative control: this fix must not turn a plain `convoy init` (no CoS) into a failure.
     expect(initExitCode(null)).toBe(0);
+  });
+});
+
+// `initExitCode` above is the DECISION; this is the WIRING — that `cmdInit` actually captures cmdCos's rc,
+// consults initExitCode, and RETURNS its result. The wiring is where the shipped bug lived (init printed the
+// error and then fell through to an unconditional `return 0`), and it is the half a pure-function test cannot
+// reach: the CoS branch is TTY-gated (`interactive && askYesNo(...)`), so it never executes under vitest.
+// Without this, reverting cmdInit to `return 0` leaves the whole suite green — the same gap that let the
+// `convoy up` doubled-log bug be reintroduced silently. Held against COMMENT-STRIPPED source, so a comment
+// cannot satisfy it (see src/source-guard.ts).
+describe("cmdInit wiring: a FAILED CoS bootstrap actually reaches the exit code", () => {
+  const body = functionBody(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "commands.ts"), "utf8"), "cmdInit");
+
+  it("cmdInit is found (a rename must fail this guard, not silently vacate it)", () => {
+    expect(body).not.toBeNull();
+  });
+
+  it("ACCEPTANCE: cmdInit CAPTURES cmdCos's return code instead of discarding it", () => {
+    expect(body, "cmdInit no longer captures cmdCos's rc — a failed bootstrap cannot affect the exit code").toMatch(/cosCode\s*=\s*await\s+cmdCos\(/);
+  });
+
+  it("ACCEPTANCE: cmdInit consults initExitCode and RETURNS its result — never an unconditional 0", () => {
+    // The bug verbatim: `if (cosCode !== 0) err(...)` and then fall through to `return 0`.
+    expect(body, "cmdInit does not consult initExitCode — the tested decision is dead code").toContain("initExitCode(cosCode)");
+    expect(body, "cmdInit computes an exit code but never returns it — a failed bootstrap still reports success").toMatch(/return\s+rc\s*;/);
+  });
+
+  it("the success path is still reachable (the negative control: this must not become `always nonzero`)", () => {
+    expect(body).toMatch(/return\s+0\s*;/);
   });
 });
