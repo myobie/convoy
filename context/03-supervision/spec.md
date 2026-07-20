@@ -73,10 +73,9 @@ a pure predicate over status and exit code, so every branch is exercisable
 without killing a real process.
 
 Recovery (SUP-R11) re-materializes the dead session from the manifest that
-declared it. The manifest is the workspace overlay's session file, which is
-already the artifact that describes how the session was launched — replaying it
-is what makes recovery a repeat of the original launch rather than a second,
-divergent code path that can drift from it.
+launched it, so that recovery is a repeat of the original launch rather than a
+second code path that can drift from it. Which artifact serves as that manifest
+is a design question below.
 
 ## Bounded respawn
 
@@ -143,6 +142,9 @@ protect.
 
 ## Design questions
 
+- Which artifact is authoritative as the recovery manifest: the workspace
+  overlay's session file, the declaration it was compiled from, or the tags the
+  live session carried.
 - Whether the supervision tree implied by the `supervisor` field should
   constrain launch ordering, so that an agent's escalation path is live before
   the agent that depends on it.

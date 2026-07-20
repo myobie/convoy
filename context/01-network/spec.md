@@ -9,9 +9,10 @@ agents become running sessions (see [03-supervision](../03-supervision/spec.md))
 
 ## Layout
 
-`networkLayout()` in `src/paths.ts` is the single mapping from a network
-directory to its children. Every wiring site derives paths from it rather than
-joining strings independently.
+`networkLayout()` in `src/paths.ts` maps a network directory to its bus, session
+registry, and worktrees; `catalogDir()` in `src/agent-file.ts` supplies the
+fourth child. Every wiring site derives paths from these rather than joining
+strings independently.
 
 ```text
 <net>/

@@ -9,12 +9,13 @@ declarations it finds (see [03-supervision](../03-supervision/spec.md)).
 
 ## Format decoding
 
-`src/spec-format.ts` makes the format a decoding detail. Each of KDL, TOML, and
-JSON decodes to the same plain-object shape, and exactly one downstream function
-— `parseAgentFile` in `src/agent-file.ts` — applies field semantics. This is the
-mechanism for SPEC-R02 and SPEC-R03: a format that decodes to the canonical
-object is fully supported by construction, and there is no per-format field
-handling anywhere above the decoder.
+`src/spec-format.ts` makes the format a decoding detail — decision
+[0007](../.decisions/0007-one-canonical-object-behind-three-formats.md). Each of
+KDL, TOML, and JSON decodes to the same plain-object shape, and exactly one
+downstream function — `parseAgentFile` in `src/agent-file.ts` — applies field
+semantics. This is the mechanism for SPEC-R02 and SPEC-R03: a format that decodes
+to the canonical object is fully supported by construction, and there is no
+per-format field handling anywhere above the decoder.
 
 TOML and JSON map to plain objects natively. KDL is a node/argument/property
 language rather than a key/value one, so `kdlToPlain` defines the mapping:
@@ -86,10 +87,10 @@ its machine and the agent would never launch with no error anywhere.
 - counter shape — convoy's own, since convoy owns what a durable declared name
   means.
 
-Only the third is convoy's to define. A second regex for the first would be a
-second chance to disagree, and the failure ordering it produces is the worst
-available: a name that declares cleanly, syncs to every machine, and fails only
-when the agent writes its first message.
+Only the third is convoy's to define. Importing the first rather than restating
+it is decision [0001](../.decisions/0001-identity-grammar-is-the-buss.md);
+deriving the second from the socket is
+[0002](../.decisions/0002-identity-length-is-derived-from-the-socket.md).
 
 `identityErrors` returns every reason in the order a reader should fix them, and
 is called from `parseAgentFile` — the one function every declaration path funnels
@@ -100,9 +101,8 @@ supervisor silently orphans an agent from its escalation path.
 `counterStem` recognizes `<role>-<n>` and the generic stems `agent`, `child`,
 `peer`, and `session`; a meaningful stem such as `fabric-2` is a second agent on
 a named thing, not the second anonymous worker. `counterContextRefusal` refuses
-rather than warns (SPEC-R16) because the failure it prevents — an agent reading a
-stranger's context as its own memory — is silent, and a declare-time warning is
-not read at the moment the wrong file is opened.
+rather than warns (SPEC-R16) — decision
+[0006](../.decisions/0006-counter-named-identities-get-no-durable-context.md).
 
 ## Authoring
 
@@ -116,20 +116,24 @@ must follow every top-level scalar.
 overlay writers consume, defaulting harness to `claude` and transport to `ding`.
 Credential selection is read back out of `env` rather than stored separately
 (SPEC-R07), so the derived launch artifact and the declaration agree by
-construction — an account *is* a config directory, and naming it twice invites
-the two to disagree.
+construction — decision
+[0004](../.decisions/0004-credentials-ride-in-env-not-an-account-field.md).
 
-`bin` is charset-validated (SPEC-R06): it is interpolated into a shell launch
-command, so it must be a plain path or command name with no whitespace, quotes,
-or metacharacters. Arguments belong in the harness's own flags.
+`bin` substitutes for the harness binary while the derived flags are preserved —
+decision [0005](../.decisions/0005-bin-replaces-the-harness-binary.md). It is
+charset-validated (SPEC-R06): it is interpolated into a shell launch command, so
+it must be a plain path or command name with no whitespace, quotes, or
+metacharacters. Arguments belong in the harness's own flags.
 
 ## Rename
 
 `src/rename.ts` moves both sides — the catalog entry and the whole bus folder —
-which is what makes SPEC-R17 hold. Moving the bus folder wholesale is why
-in-flight mail survives: messages sitting in the inbox travel with the folder and
-need no special handling precisely because the move is a move and not a
-re-creation.
+which is what makes SPEC-R17 hold; that both halves move and that the tombstone
+is convoy's alone is decision
+[0003](../.decisions/0003-rename-moves-both-halves-and-tombstones-the-old-name.md).
+Moving the bus folder wholesale is why in-flight mail survives: messages sitting
+in the inbox travel with the folder and need no special handling precisely
+because the move is a move and not a re-creation.
 
 The tombstone is a dotfile marker at the old bus folder. It carries no inbox,
 archive, or status beside it, because the bus lists a folder only when one of
