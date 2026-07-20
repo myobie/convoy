@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { crashDingTargets, resolveRoot, workerCrashed } from "./up.ts";
+import { crashDingTargets, emitWrites, resolveRoot, workerCrashed } from "./up.ts";
 import { PtyHost, type SupervisedSession } from "./host.ts";
 import { networkDirForName } from "./paths.ts";
 
@@ -117,5 +117,37 @@ describe("workerCrashed — the worker negative-control gate (crash → ding, cl
   });
   it("no exit code + still running is not a crash", () => {
     expect(workerCrashed("running", null)).toBe(false);
+  });
+});
+
+describe("emitWrites — one supervisor log line, printed ONCE (the doubled-log bug)", () => {
+  const obj = { type: "up", network: "/n" };
+  const human = "hosting /n (reconcile every 30s, cap 3 fails / 60s)";
+
+  it("ACCEPTANCE: without --json the human line appears EXACTLY ONCE across both streams", () => {
+    // Repro of the bug: `convoy up` writes both streams to the same terminal, so a human line emitted to
+    // stderr AND stdout printed twice — every reconcile line doubled.
+    const w = emitWrites(obj, human, false);
+    const all = [...w.stderr, ...w.stdout];
+    expect(all.filter((l) => l.includes(human))).toHaveLength(1);
+  });
+
+  it("without --json the human line goes to stderr and stdout stays EMPTY", () => {
+    expect(emitWrites(obj, human, false)).toEqual({ stderr: [`${human}\n`], stdout: [] });
+  });
+
+  it("with --json stdout carries the JSONL record and stderr still carries the human line (once)", () => {
+    const w = emitWrites(obj, human, true);
+    expect(w.stderr).toEqual([`${human}\n`]);
+    expect(w.stdout).toEqual([`${JSON.stringify(obj)}\n`]);
+    expect(JSON.parse(w.stdout[0]!)).toEqual(obj); // stdout stays a parseable JSONL stream
+    expect(w.stdout[0]).not.toContain(human); // ...never the human text
+  });
+
+  it("every line is newline-terminated on both streams (JSONL framing)", () => {
+    for (const json of [true, false]) {
+      const w = emitWrites(obj, human, json);
+      for (const l of [...w.stderr, ...w.stdout]) expect(l.endsWith("\n")).toBe(true);
+    }
   });
 });

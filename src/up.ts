@@ -149,6 +149,20 @@ export function resolveRoot(network: string | undefined): string {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Where one supervisor log line goes. The contract: the HUMAN line always goes to stderr (so it stays
+ *  readable even when stdout is piped into a parser), and stdout carries the machine stream — the JSONL
+ *  record — ONLY under `--json`.
+ *
+ *  The bug this closes: the non-json branch used to ALSO write the human line to stdout, so a plain
+ *  `convoy up` (both streams on the same terminal) printed EVERY line TWICE — the doubled supervisor log
+ *  that made the reconcile loop look like it was ticking at 2× the rate it is. stdout carrying a copy of
+ *  the human text was never useful either: a caller that wants to parse the stream passes `--json`, and a
+ *  caller that wants to read it has it on stderr. Pure → unit-testable (the two streams are the whole
+ *  contract, so a test can assert the line count directly). */
+export function emitWrites(obj: Record<string, unknown>, human: string, json: boolean): { stderr: string[]; stdout: string[] } {
+  return { stderr: [`${human}\n`], stdout: json ? [`${JSON.stringify(obj)}\n`] : [] };
+}
+
 export async function up(opts: UpOptions): Promise<number> {
   const root = resolveRoot(opts.network);
   const interval = opts.reconcileInterval ?? 30;
@@ -176,10 +190,12 @@ export async function up(opts: UpOptions): Promise<number> {
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
 
-  // The human line always goes to stderr; stdout carries the JSONL stream when --json, else the line.
+  // The human line always goes to stderr; stdout carries the JSONL stream when --json, and NOTHING
+  // otherwise (writing the human line to both streams printed every supervisor line twice — see emitWrites).
   const emit = (obj: Record<string, unknown>, human: string): void => {
-    process.stderr.write(`${human}\n`);
-    process.stdout.write(json ? `${JSON.stringify(obj)}\n` : `${human}\n`);
+    const w = emitWrites(obj, human, json);
+    for (const s of w.stderr) process.stderr.write(s);
+    for (const s of w.stdout) process.stdout.write(s);
   };
 
   emit(
