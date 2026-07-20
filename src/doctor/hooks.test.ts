@@ -2,7 +2,19 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compactHookHealth } from "./hooks.ts";
+import { compactHookHealth, hooksNotLocated } from "./hooks.ts";
+
+describe("hooksNotLocated — a can't-LOCATE is an honest WARN, never a false 'NOT found' (Nathan's bar)", () => {
+  it("state is null (WARN), non-blocking, and the message asserts NO absence — it says 'couldn't verify' + how to", () => {
+    const leg = hooksNotLocated();
+    expect(leg.state).toBeNull(); // WARN, NOT false (a red hard-fail asserting absence)
+    expect(leg.blocking).toBe(false); // never fails the doctor's rc on a can't-verify
+    expect(leg.detail).toMatch(/couldn't LOCATE|not proof/i); // honest: it does not claim they're missing
+    expect(leg.detail).toMatch(/SMALLTALK_DIR/); // tells the user how to verify
+    expect(leg.detail).toMatch(/ST_BIN/); // names the off-PATH wiring (the Johannes cause)
+    expect(leg.detail).not.toMatch(/\bNOT found\b/); // must not assert the false absence the old check did
+  });
+});
 
 // The real fail-open shim we ship-by-reference (convoy points agents at smalltalk's copy). We reproduce its
 // exact bytes here so the test doesn't depend on the smalltalk repo being checked out at a fixed path.

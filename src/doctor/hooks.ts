@@ -26,6 +26,22 @@ export interface HookHealth {
   fix?: string;
 }
 
+/** The doctor's Hooks leg when smalltalk can't be LOCATED (discoverSmalltalkDir returned null). Nathan's bar:
+ *  the doctor must not say untrue things — a can't-LOCATE is NOT proof the hooks are absent, so it is an honest
+ *  WARN (state null = couldn't verify), NEVER a red hard-fail asserting "NOT found". The hooks may well be
+ *  installed and wired via each agent's absolute `ST_BIN` (which is exactly why an `st`-off-PATH box like
+ *  Johannes's false-failed the old check). Pure → unit-testable. `blocking` is false so the doctor's rc doesn't
+ *  fail on a can't-verify. */
+export function hooksNotLocated(): { state: null; blocking: false; detail: string } {
+  return {
+    state: null,
+    blocking: false,
+    detail:
+      "couldn't LOCATE smalltalk to verify its hooks — looked at SMALLTALK_DIR, ST_BIN, `st` on PATH, and ../smalltalk. " +
+      "This is NOT proof they're missing: set SMALLTALK_DIR to point at your smalltalk clone to verify, or — if your agents already run — the hooks are wired via each agent's absolute ST_BIN and are fine.",
+  };
+}
+
 /** Resolve + health-check the PreCompact hook in the shared smalltalk hooks dir (the one convoy wires). */
 export async function compactHookHealth(smalltalkDir: string): Promise<HookHealth> {
   const hooks = join(smalltalkDir, "examples", "claude-code", "hooks");

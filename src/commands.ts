@@ -19,7 +19,7 @@ import { agentFilePath, agentFileToSpec, agentFileToToml, catalogDir, readAgentF
 import { authReadiness } from "./doctor/auth.ts";
 import { harnessCheckups } from "./doctor/checkup.ts";
 import { gitUsableCheck, nodeVersionCheck, osCheck, tmpdirSocketCheck } from "./doctor/env.ts";
-import { compactHookHealth } from "./doctor/hooks.ts";
+import { compactHookHealth, hooksNotLocated } from "./doctor/hooks.ts";
 import { runFullOrgSuite, runReadinessSuite } from "./doctor/suite.ts";
 import { structureChecks } from "./doctor/structure.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
@@ -411,14 +411,16 @@ export async function cmdDoctor(args: string[]): Promise<number> {
 
   out("Hooks");
   const smalltalk = discoverSmalltalkDir();
-  bullet(
-    smalltalk !== null,
-    smalltalk !== null
-      ? `smalltalk hooks found (${smalltalk})`
-      : "smalltalk hooks NOT found — set SMALLTALK_DIR or put `st` on PATH; without them `convoy add`/`cos` can't spawn agents",
-  );
-  if (smalltalk === null) failures++;
-  else {
+  if (smalltalk === null) {
+    // Can't LOCATE smalltalk (no SMALLTALK_DIR/ST_BIN, `st` off-PATH, no sibling checkout). That is NOT proof
+    // the hooks are absent — they may be installed + wired via each agent's absolute ST_BIN. Nathan's bar: never
+    // assert a false absence. Honest WARN (couldn't verify; set SMALLTALK_DIR), never a red hard fail. Real fix
+    // to follow: consume smalltalk's `st hooks path --json` once it ships.
+    const leg = hooksNotLocated();
+    bullet(leg.state, leg.detail);
+    if (leg.blocking) failures++;
+  } else {
+    bullet(true, `smalltalk hooks found (${smalltalk})`);
     // Compact-readiness: the PreCompact hook must be parse-safe under macOS /bin/bash 3.2 + fail-open, or
     // /compact wedges the whole session (and, since the hook is shared, the whole network). Non-spawning.
     const compact = await compactHookHealth(smalltalk);

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -218,6 +218,34 @@ describe("discoverSmalltalkDir (fresh-install hook discovery, no SMALLTALK_DIR n
       expect(found).not.toBe(empty);
     } finally {
       rmSync(empty, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("discoverSmalltalkDir via ST_BIN (the off-PATH hooks discovery — Johannes false-negative)", () => {
+  const savedSt = process.env["SMALLTALK_DIR"];
+  const savedBin = process.env["ST_BIN"];
+  afterEach(() => {
+    if (savedSt === undefined) delete process.env["SMALLTALK_DIR"]; else process.env["SMALLTALK_DIR"] = savedSt;
+    if (savedBin === undefined) delete process.env["ST_BIN"]; else process.env["ST_BIN"] = savedBin;
+  });
+
+  it("finds smalltalk from ST_BIN's grandparent even with SMALLTALK_DIR unset (hooks wired via ST_BIN, `st` off PATH)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "convoy-stbin-"));
+    try {
+      // A realistic smalltalk clone: bin/st + the hook scripts. ST_BIN points at the absolute st (as the agent
+      // hook commands bake it); discovery must resolve <clone> from it, without SMALLTALK_DIR or `st` on PATH.
+      mkdirSync(join(dir, "bin"), { recursive: true });
+      writeFileSync(join(dir, "bin", "st"), "#!/bin/sh\n");
+      mkdirSync(join(dir, "examples", "claude-code", "hooks"), { recursive: true });
+      writeFileSync(join(dir, "examples", "claude-code", "hooks", "session-start.sh"), "#!/bin/sh\n");
+      delete process.env["SMALLTALK_DIR"]; // force the ST_BIN path (SMALLTALK_DIR would short-circuit first)
+      process.env["ST_BIN"] = join(dir, "bin", "st");
+      // discovery canonicalizes via realpathSync (as the `which st` path always has), so compare to the real
+      // path — on macOS mkdtemp's /var/... resolves to /private/var/... (the /var → /private/var symlink).
+      expect(discoverSmalltalkDir()).toBe(realpathSync(dir));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

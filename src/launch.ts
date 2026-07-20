@@ -57,22 +57,33 @@ function hasHooks(dir: string): boolean {
   return existsSync(join(dir, "examples", "claude-code", "hooks", "session-start.sh"));
 }
 
+/** The smalltalk repo that owns an `st` binary path: `<smalltalk>/bin/st` → its resolved grandparent. Null
+ *  if the path is empty or an unresolvable symlink. Shared by the ST_BIN + `which st` discovery candidates. */
+function smalltalkFromStBinary(stBin: string): string | null {
+  if (!stBin) return null;
+  try {
+    return dirname(dirname(realpathSync(stBin))); // <smalltalk>/bin/st → <smalltalk>
+  } catch {
+    return null; // unresolvable symlink / missing path
+  }
+}
+
 /** Discover the smalltalk repo (for its hook scripts + the `st` binary the hooks invoke), tolerating a
- *  fresh install with NO `SMALLTALK_DIR` set. Order: (1) `SMALLTALK_DIR` env; (2) the `st` binary on
- *  PATH — it lives at `<smalltalk>/bin/st`, so its resolved grandparent IS the repo (works for any user
- *  who has `st` on PATH, which convoy requires anyway); (3) the sibling `../smalltalk` dev checkout.
+ *  fresh install with NO `SMALLTALK_DIR` set. Order: (1) `SMALLTALK_DIR` env; (2) `ST_BIN` env — the
+ *  ABSOLUTE `st` path baked into each agent's hook commands, so it works even when `st` is NOT on PATH
+ *  (Johannes's box: the hooks run via ST_BIN, not PATH — the old check false-failed there); (3) the `st`
+ *  binary on PATH (`<smalltalk>/bin/st` → grandparent); (4) the sibling `../smalltalk` dev checkout.
  *  Returns the first candidate that actually contains the hooks, else null. */
 export function discoverSmalltalkDir(): string | null {
   const candidates: string[] = [];
   const env = process.env["SMALLTALK_DIR"];
   if (env) candidates.push(env);
+  const fromStBin = smalltalkFromStBinary(process.env["ST_BIN"] ?? ""); // the hooks bake ST_BIN — usable off-PATH
+  if (fromStBin) candidates.push(fromStBin);
   const st = whichSync("st");
   if (st) {
-    try {
-      candidates.push(dirname(dirname(realpathSync(st)))); // <smalltalk>/bin/st → <smalltalk>
-    } catch {
-      // unresolvable symlink — skip
-    }
+    const fromPath = smalltalkFromStBinary(st);
+    if (fromPath) candidates.push(fromPath);
   }
   candidates.push(join(dirname(dirname(fileURLToPath(import.meta.url))), "..", "smalltalk"));
   for (const c of candidates) if (hasHooks(c)) return c;
