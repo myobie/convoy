@@ -160,9 +160,37 @@
               touch $out
             '';
 
-        # convoy's own `tsc --noEmit`, run against the same sibling deps the package links. The vitest
-        # suite is deliberately NOT wired up here: parts of it shell out to `git worktree` and probe
-        # the host, which the sandbox cannot provide.
+        # The completions parity suite — the tests that keep src/command-table.ts, argv dispatch, and
+        # the generated scripts from drifting. Sandbox-safe (it only spawns `convoy` and reads
+        # src/cli.ts), unlike the rest of the vitest suite, which shells out to `git worktree` and
+        # probes the host and so is deliberately NOT wired up here.
+        checks.parity = pkgs.buildNpmPackage {
+          pname = "convoy-completions-parity";
+          inherit version npmDepsHash;
+          src = self;
+          nodejs = pkgs.nodejs_24;
+          dontNpmBuild = true;
+
+          # The suite skips a shell's syntax check when that shell is absent; give it all three.
+          nativeBuildInputs = [
+            pkgs.bash
+            pkgs.zsh
+            pkgs.fish
+          ];
+
+          preBuild = linkSiblings ".";
+
+          buildPhase = ''
+            runHook preBuild
+            export HOME=$(mktemp -d)
+            npx vitest run src/completions.test.ts
+            runHook postBuild
+          '';
+
+          installPhase = "touch $out";
+        };
+
+        # convoy's own `tsc --noEmit`, run against the same sibling deps the package links.
         checks.typecheck = pkgs.buildNpmPackage {
           pname = "convoy-typecheck";
           inherit version;
