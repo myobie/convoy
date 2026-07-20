@@ -392,7 +392,14 @@ export async function up(opts: UpOptions): Promise<number> {
           state.set(key, failDecision.tags);
           host.setTags(s.name, writtenTags(failDecision.tags));
           results.failed++;
-          if (failDecision.kind === "flap") {
+          if (failDecision.kind === "respawn") {
+            // Still under the cap — say so on every attempt. Silence until the park would be a step back
+            // from the old `(spawn FAILED)` line, and this is exactly the state that was invisible before.
+            emit(
+              { type: "recovery_failed", identity: logicalId(s), session: s.name, attempt: failDecision.tags.consecutiveFastFails, cap: limit, ts: isoString(now) },
+              `[convoy-up] recovery FAILED ${logicalId(s)} session=${s.name} — could not relaunch from its manifest (attempt ${failDecision.tags.consecutiveFastFails}/${limit})`,
+            );
+          } else {
             results.flapping++;
             const e = failDecision.event;
             emit(
