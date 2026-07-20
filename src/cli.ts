@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { down, up, type DownOptions, type UpOptions } from "./up.ts";
-import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdEnv, cmdInit, cmdInstallCli, cmdLs, cmdPersonas, cmdPretrust, cmdReload, cmdRemove, cmdRename, cmdRender, cmdShell, hasFlag, optValue, positionals, unknownFlag } from "./commands.ts";
+import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdEnv, cmdInit, cmdInstallCli, cmdLs, cmdPersonas, cmdPretrust, cmdReload, cmdRemove, cmdRename, cmdRender, cmdRun, cmdShell, hasFlag, optValue, positionals, unknownFlag } from "./commands.ts";
 import { cmdCompletions } from "./completions.ts";
 import { flagAllowList } from "./command-table.ts";
 import { run } from "./exec.ts";
@@ -71,6 +71,7 @@ export async function main(argv: string[]): Promise<void> {
     case "pretrust": code = await cmdPretrust(rest); break;
     case "install-cli": code = await cmdInstallCli(rest); break;
     case "cos": code = await cmdCos(rest); break;
+    case "run": code = await cmdRun(rest); break;
     case "up": code = await cmdUp(rest); break;
     case "down": code = await cmdDown(rest); break;
     case "env": code = cmdEnv(rest); break;
@@ -135,6 +136,7 @@ function printHelp(): void {
       "  add <role>     DECLARE an agent — write its agent file into the synced catalog; NO launch (convoy up runs it) [--identity --host --harness claude|codex --model <id> --transport ding|mcp --mcp --network --dir --persona --permanent --dry-run --force]\n" +
       "  render <id>    materialize an agent's worktree overlay from its catalog agent file — NO launch, NO bus (declarative: add=declare · render=materialize · up=reconcile) [--dir <workspace> --network --dry-run]\n" +
       "  cos --repo <d> bootstrap a Chief of Staff\n" +
+      "  run [role]     launch an AD-HOC session — NOT declared, NOT reconciled, NOT respawned, no durable context (declare it with `add` if it should survive) [--identity --harness claude|codex --model <id> --transport ding|mcp --mcp --network --dir --persona --prefix --config-dir --dry-run --force]\n" +
       "  up <network>   host a network in the foreground (TCC anchor + supervisor + flapping-cap) [--once = one-shot reconcile-and-exit (adopts live sessions, no daemon) --json]\n" +
       "  down [network] tear down the network — the ONLY path that kills sessions [--dry-run --force --json]\n" +
       "  env [network]  print eval-safe exports for a network's env — `eval \"$(convoy env <net>)\"` sets ST_ROOT+PTY_ROOT [--identity <id>]\n" +
