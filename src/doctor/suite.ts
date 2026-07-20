@@ -151,6 +151,12 @@ export async function checkTmpNetwork(): Promise<CheckResult> {
     const add = await runConvoy(box, ["add", "worker", "--identity", "doctor-wk", "--network", box.net, "--dir", wkDir, "--persona", fixture("worker-persona.md")]);
     if (!add.ok) return { name, pass: false, detail: `convoy add failed: ${add.stderr.trim() || add.stdout.trim()}`, fix: "a spawn failure usually means smalltalk hooks aren't discoverable — check `convoy doctor --quick` (Hooks)" };
 
+    // `convoy add` is DECLARE-ONLY — it writes the catalog entry and launches nothing. Without this
+    // reconcile the checks below poll forever for a session that was never spawned, which is why the
+    // whole readiness suite failed by construction on every machine.
+    const up = await runConvoy(box, ["up", box.net, "--once"]);
+    if (!up.ok) return { name, pass: false, detail: `convoy up --once failed: ${up.stderr.trim() || up.stdout.trim()}`, fix: "the declared agent did not launch — run `convoy doctor --quick`" };
+
     const spawned = await ptySessionNames(box.env);
     const agentUp = [...spawned].some((s) => s.includes("doctor-wk") || s.includes(".doctor-wk"));
     if (!agentUp) return { name, pass: false, detail: `agent session did not register (sessions: ${[...spawned].join(", ") || "none"})`, fix: "the pty daemon didn't register the session — check `pty list` and the pty binary" };
@@ -301,6 +307,12 @@ export async function checkDings(): Promise<CheckResult> {
     const add = await runConvoy(box, ["add", "worker", "--identity", "doctor-rx", "--network", box.net, "--dir", rxDir, "--persona", fixture("worker-persona.md")]);
     if (!add.ok) return { name, pass: false, detail: `convoy add failed: ${add.stderr.trim() || add.stdout.trim()}`, fix: "spawn failed — `convoy doctor --quick` (Hooks/Personas)" };
 
+    // `convoy add` is DECLARE-ONLY — it writes the catalog entry and launches nothing. Without this
+    // reconcile the checks below poll forever for a session that was never spawned, which is why the
+    // whole readiness suite failed by construction on every machine.
+    const up = await runConvoy(box, ["up", box.net, "--once"]);
+    if (!up.ok) return { name, pass: false, detail: `convoy up --once failed: ${up.stderr.trim() || up.stdout.trim()}`, fix: "the declared agent did not launch — run `convoy doctor --quick`" };
+
     // Wait for the recipient to boot + go available (its SessionStart boot ritual sets status + drains).
     const avail = await pollUntil(async () => (await runSt(box, ["status", busId("doctor-rx")])).stdout.trim() === "available", 120_000);
     if (!avail) return { name, pass: false, detail: "recipient never became available (didn't boot)", fix: "the agent didn't boot — check claude auth (`/login`) then re-run; or `convoy doctor --quick`" };
@@ -362,6 +374,12 @@ export async function checkStateExternalization(): Promise<CheckResult> {
     mkdirSync(sxDir, { recursive: true });
     const add = await runConvoy(box, ["add", "worker", "--identity", "doctor-sx", "--network", box.net, "--dir", sxDir, "--persona", fixture("worker-persona.md")]);
     if (!add.ok) return { name, pass: false, detail: `convoy add failed: ${add.stderr.trim() || add.stdout.trim()}`, fix: "spawn failed — `convoy doctor --quick`" };
+
+    // `convoy add` is DECLARE-ONLY — it writes the catalog entry and launches nothing. Without this
+    // reconcile the checks below poll forever for a session that was never spawned, which is why the
+    // whole readiness suite failed by construction on every machine.
+    const up = await runConvoy(box, ["up", box.net, "--once"]);
+    if (!up.ok) return { name, pass: false, detail: `convoy up --once failed: ${up.stderr.trim() || up.stdout.trim()}`, fix: "the declared agent did not launch — run `convoy doctor --quick`" };
 
     const avail = await pollUntil(async () => (await runSt(box, ["status", busId("doctor-sx")])).stdout.trim() === "available", 120_000);
     if (!avail) return { name, pass: false, detail: "agent never became available (didn't boot)", fix: "the agent didn't boot — check claude auth (`/login`)" };
@@ -429,6 +447,12 @@ export async function checkExactlyOnce(): Promise<CheckResult> {
     writeFileSync(logPath, ""); // empty ledger — the countable side-effect
     const add = await runConvoy(box, ["add", "worker", "--identity", "doctor-xo", "--network", box.net, "--dir", xoDir, "--persona", fixture("exactly-once-persona.md")]);
     if (!add.ok) return { name, pass: false, detail: `convoy add failed: ${add.stderr.trim() || add.stdout.trim()}`, fix: "spawn failed — `convoy doctor --quick`" };
+
+    // `convoy add` is DECLARE-ONLY — it writes the catalog entry and launches nothing. Without this
+    // reconcile the checks below poll forever for a session that was never spawned, which is why the
+    // whole readiness suite failed by construction on every machine.
+    const up = await runConvoy(box, ["up", box.net, "--once"]);
+    if (!up.ok) return { name, pass: false, detail: `convoy up --once failed: ${up.stderr.trim() || up.stdout.trim()}`, fix: "the declared agent did not launch — run `convoy doctor --quick`" };
 
     const avail = await pollUntil(async () => (await runSt(box, ["status", busId("doctor-xo")])).stdout.trim() === "available", 120_000);
     if (!avail) return { name, pass: false, detail: "agent never became available (didn't boot)", fix: "the agent didn't boot — check claude auth (`/login`)" };
