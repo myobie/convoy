@@ -8,6 +8,7 @@ import { homedir, hostname } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "./exec.ts";
+import { flagAllowList } from "./command-table.ts";
 import { CONVOY_DIR, DEFAULT_NETWORK_NAME, defaultConvoyNetwork, isNetworkName, networkDirForName, networkDirOfStRoot, networkLayout, stRootOf } from "./paths.ts";
 import { networkNameFromDir, readNetworkConfig, writeNetworkConfig } from "./network-config.ts";
 import { defaultBinDir, installClis } from "./install-cli.ts";
@@ -186,7 +187,7 @@ export function hostPrefixedIdentity(id: string): string {
  *  (the footgun: forgetting them → pty/st hit the global root, not the network). Env is DERIVED from
  *  the network layout, never hardcoded. Default network = ambient ST_ROOT (the existing convention). */
 export function cmdEnv(args: string[]): number {
-  const bad = unknownFlag(args, [], ["--identity", "--network"]);
+  const bad = unknownFlag(args, ...flagAllowList("env"));
   if (bad) {
     err(`unknown flag ${bad}. Usage: convoy env [network] [--identity <id>]`);
     return 2;
@@ -206,7 +207,7 @@ export function cmdEnv(args: string[]): number {
  *  unchanged. Env DERIVED from the network layout. A human shell is not an agent → ST_AGENT unset unless
  *  --identity is given. Sets CONVOY_NETWORK as a marker (users can surface it in their prompt). */
 export async function cmdShell(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, [], ["--identity", "--network"]);
+  const bad = unknownFlag(args, ...flagAllowList("shell"));
   if (bad) {
     err(`unknown flag ${bad}. Usage: convoy shell [network] [--identity <id>]`);
     return 2;
@@ -335,7 +336,7 @@ async function usedHarnesses(network: string | null): Promise<Set<Harness>> {
 
 // ---- commands ----
 export async function cmdDoctor(args: string[]): Promise<number> {
-  const badFlag = unknownFlag(args, ["--quick", "--full"], ["--network"]);
+  const badFlag = unknownFlag(args, ...flagAllowList("doctor"));
   if (badFlag) {
     err(`unrecognized flag "${badFlag}" for \`convoy doctor\`. See \`convoy doctor --help\`.`);
     return 2;
@@ -481,7 +482,7 @@ export async function cmdDoctor(args: string[]): Promise<number> {
  *  `node <convoy-clone>/bin/convoy install-cli` (convoy runs through node before it's on PATH). Verifies the
  *  links + whether the dir is on PATH, printing the shell-specific line to add it if not. Portable (macOS/Linux). */
 export async function cmdInstallCli(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, [], ["--bin"]);
+  const bad = unknownFlag(args, ...flagAllowList("install-cli"));
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy install-cli\`. Usage: convoy install-cli [--bin <dir>].`);
     return 2;
@@ -533,7 +534,7 @@ async function askYesNo(question: string, def: boolean): Promise<boolean> {
  *  (or a non-TTY, e.g. scripts/evals) skips prompts + narration; `--yes` accepts defaults non-interactively;
  *  `--json` also prints a one-line JSON summary. Explicit args always win over prompts. */
 export async function cmdInit(args: string[]): Promise<number> {
-  const badFlag = unknownFlag(args, ["--no-channel", "--quiet", "--json", "--yes"], ["--megarepo", "--name"]);
+  const badFlag = unknownFlag(args, ...flagAllowList("init"));
   if (badFlag) {
     err(`unrecognized flag "${badFlag}" for \`convoy init\`. See \`convoy init --help\`.`);
     return 2;
@@ -661,7 +662,7 @@ export async function cutWorktree(megarepo: string, path: string, identity: stri
 }
 
 export async function cmdAdd(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run", "--force"], ["--identity", "--harness", "--transport", "--network", "--persona", "--dir", "--host", "--model"]);
+  const bad = unknownFlag(args, ...flagAllowList("add"));
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy add\` — refusing rather than silently ignoring it. See \`convoy add --help\`.`);
     return 2;
@@ -762,7 +763,7 @@ async function ensureRepo(path: string, identity: string): Promise<void> {
 }
 
 export async function cmdCos(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, ["--mcp", "--permanent", "--dry-run", "--force"], ["--repo", "--identity", "--transport", "--network", "--persona", "--prefix", "--config-dir"]);
+  const bad = unknownFlag(args, ...flagAllowList("cos"));
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy cos\` — refusing rather than silently ignoring it. See \`convoy cos --help\`.`);
     return 2;
@@ -917,7 +918,7 @@ async function localAgentMap(network: string | null): Promise<Map<string, LocalI
 }
 
 export async function cmdLs(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, ["--live-only", "--json", "--tree"], ["--network", "--stale-after"]);
+  const bad = unknownFlag(args, ...flagAllowList("ls"));
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy ls\`. See \`convoy --help\`.`);
     return 2;
@@ -1019,7 +1020,7 @@ export function retireInCatalog(catalog: string, identity: string): { path: stri
 }
 
 export async function cmdRemove(args: string[]): Promise<number> {
-  const badFlag = unknownFlag(args, ["--dry-run"], ["--network"]);
+  const badFlag = unknownFlag(args, ...flagAllowList("remove"));
   if (badFlag) {
     err(`unrecognized flag "${badFlag}" for \`convoy remove\`. See \`convoy remove --help\`.`);
     return 2;
@@ -1075,7 +1076,7 @@ export async function cmdRemove(args: string[]): Promise<number> {
  *  nothing — the no-pollution footprint, made inspectable. Independently useful now (hand-author an agent
  *  file, render it, look); `convoy add` will author the file in piece 2. */
 export async function cmdRender(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, ["--dry-run", "--print"], ["--dir", "--network"]);
+  const bad = unknownFlag(args, ...flagAllowList("render"));
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy render\`. See \`convoy render --help\`.`);
     return 2;
@@ -1222,7 +1223,7 @@ export async function cmdReload(args: string[]): Promise<number> {
  *  ~/.claude.json (or <config-dir>/.claude.json); `--harness codex` writes codex's ~/.codex/config.toml
  *  (codex's --dangerously-bypass-approvals-and-sandbox does NOT skip its directory-trust prompt). */
 export async function cmdPretrust(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, [], ["--config-dir", "--harness"]);
+  const bad = unknownFlag(args, ...flagAllowList("pretrust"));
   if (bad) {
     err(`unrecognized flag "${bad}" for \`convoy pretrust\`. Usage: convoy pretrust <dir> [<dir>...] [--harness claude|codex] [--config-dir <path>].`);
     return 2;

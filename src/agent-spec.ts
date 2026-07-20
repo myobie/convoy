@@ -6,8 +6,12 @@ import { hostname } from "node:os";
 import { baseFile } from "./personas.ts";
 import { permanentByRole, type PermissionMode, type Role } from "./role.ts";
 
-export type Transport = "mcp" | "ding";
-export type Harness = "claude" | "codex";
+// Closed enums as const ARRAYS with the type derived from them, so the CLI's `--transport`/`--harness`
+// completions can read the real list instead of retyping it (a type alone is not iterable at runtime).
+export const TRANSPORTS = ["ding", "mcp"] as const;
+export type Transport = (typeof TRANSPORTS)[number];
+export const HARNESSES = ["claude", "codex"] as const;
+export type Harness = (typeof HARNESSES)[number];
 
 export interface AgentSpec {
   harness: Harness;

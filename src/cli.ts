@@ -5,11 +5,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { down, up, type DownOptions, type UpOptions } from "./up.ts";
 import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdEnv, cmdInit, cmdInstallCli, cmdLs, cmdPersonas, cmdPretrust, cmdReload, cmdRemove, cmdRender, cmdShell, hasFlag, optValue, positionals, unknownFlag } from "./commands.ts";
+import { cmdCompletions } from "./completions.ts";
+import { flagAllowList } from "./command-table.ts";
 import { run } from "./exec.ts";
 
-/** Reject the first flag `convoy <name>` doesn't honor (rc=2) instead of silently ignoring it. */
-function rejectUnknown(name: string, args: string[], bool: string[], value: string[]): number | null {
-  const bad = unknownFlag(args, bool, value);
+/** Reject the first flag `convoy <name>` doesn't honor (rc=2) instead of silently ignoring it. The
+ *  accepted set comes from the shared command table, so it is the same list the completions offer. */
+function rejectUnknown(name: string, args: string[]): number | null {
+  const bad = unknownFlag(args, ...flagAllowList(name));
   if (bad === null) return null;
   process.stderr.write(`convoy: unrecognized flag "${bad}" for \`convoy ${name}\`. See \`convoy --help\`.\n`);
   return 2;
@@ -72,6 +75,7 @@ export async function main(argv: string[]): Promise<void> {
     case "env": code = cmdEnv(rest); break;
     case "shell": code = await cmdShell(rest); break;
     case "personas": code = await cmdPersonas(rest); break;
+    case "completions": code = cmdCompletions(rest); break;
     case "app": code = await cmdApp(rest); break; // hidden from --help until the macOS app is dailyable (see cmdApp)
     case "-h":
     case "--help":
@@ -90,7 +94,7 @@ export async function main(argv: string[]): Promise<void> {
 }
 
 async function cmdUp(args: string[]): Promise<number> {
-  const bad = rejectUnknown("up", args, ["--json", "--once", "--keep-sessions"], ["--reconcile-interval", "--fast-fail-window", "--fast-fail-limit", "--notify"]);
+  const bad = rejectUnknown("up", args);
   if (bad !== null) return bad;
   const opts: UpOptions = {};
   const num = (v: string | null): number | undefined => (v === null ? undefined : Number(v));
@@ -107,7 +111,7 @@ async function cmdUp(args: string[]): Promise<number> {
 }
 
 async function cmdDown(args: string[]): Promise<number> {
-  const bad = rejectUnknown("down", args, ["--json", "--dry-run", "--force"], []);
+  const bad = rejectUnknown("down", args);
   if (bad !== null) return bad;
   const opts: DownOptions = {};
   opts.json = hasFlag(args, "--json");
@@ -139,6 +143,7 @@ function printHelp(): void {
       "  pretrust <dir>... batch pre-trust agent dirs before spawning many back-to-back (avoids the trust race) [--config-dir]\n" +
       "  install-cli    symlink convoy + st + pty onto PATH (default ~/.local/bin) — reliable, no npm link [--bin <dir>]\n" +
       "  personas <status|install>\n" +
+      "  completions <bash|fish|zsh>  print a shell completion script (generated from the command table)\n" +
       "\nNAMED NETWORKS: networks live at ($XDG_STATE_HOME|~/.local/state)/convoy/<name>, default name \"default\". A bare\n" +
       "  network NAME resolves under that home; a path is used as-is. No network arg / --network / ST_ROOT → the default\n" +
       "  network (<home>/default, not st's global ~/.local/state/smalltalk) — so `convoy init` then `convoy up` works with zero config.\n",
