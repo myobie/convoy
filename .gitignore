@@ -17,3 +17,7 @@ DING-BUS.md
 
 # Session marker
 .claude-session-id
+
+# Nix build results
+result
+result-*
