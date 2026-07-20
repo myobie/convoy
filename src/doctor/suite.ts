@@ -535,6 +535,13 @@ export async function checkDevTask(): Promise<CheckResult> {
       if (!add.ok) return { name, pass: false, detail: `convoy add ${s.id} failed: ${add.stderr.trim() || add.stdout.trim()}`, fix: "a tier failed to spawn — `convoy doctor --quick` (Hooks/Personas)" };
     }
 
+    // `convoy add` is DECLARE-ONLY — it writes the catalog entry and launches NOTHING ("the catalog is
+    // desired state. Run `convoy up` to reconcile"). Without this reconcile the poll below waits forever
+    // for three tiers that were never spawned, so the check fails by construction on every machine. One
+    // `up --once` pass launches all three declared tiers.
+    const up = await runConvoy(box, ["up", box.net, "--once"]);
+    if (!up.ok) return { name, pass: false, detail: `convoy up --once failed: ${up.stderr.trim() || up.stdout.trim()}`, fix: "the declared tiers did not launch — run `convoy doctor --quick`" };
+
     // Wait for all three tiers to boot + go available.
     const ids = ["doctor-cos", "doctor-sup", "doctor-wk"];
     const allUp = await pollUntil(async () => {
