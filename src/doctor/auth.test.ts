@@ -1,5 +1,42 @@
 import { describe, it, expect } from "vitest";
-import { authReadiness, classifyAuthSignal, type AuthSignal, type Harness } from "./auth.ts";
+import { authReadiness, classifyAuthSignal, classifyProbe, type AuthSignal, type Harness, type ProbeExec } from "./auth.ts";
+
+describe("classifyProbe — probe result → signal (the false-negative fix: only a CLEAR signal is signed-out)", () => {
+  const probe = (over: Partial<ProbeExec>): ProbeExec => ({ code: 0, stdout: "", stderr: "", timedOut: false, ...over });
+
+  it("a CLEAR not-signed-in signal → signed-out — even when the process EXITS 0 (claude -p prints it but rc 0)", () => {
+    expect(classifyProbe(probe({ code: 0, stdout: "Not logged in · Please run /login" }))).toBe("signed-out");
+    expect(classifyProbe(probe({ code: 1, stderr: "Invalid API key · Please run /login" }))).toBe("signed-out");
+    expect(classifyProbe(probe({ code: 1, stderr: "stream error: unexpected status 401 Unauthorized" }))).toBe("signed-out");
+    expect(classifyProbe(probe({ code: 1, stdout: "OAuth token has expired" }))).toBe("signed-out");
+    expect(classifyProbe(probe({ code: 1, stderr: "Please run `codex login` to authenticate" }))).toBe("signed-out");
+  });
+
+  it("rc 0 with no auth-failure signal → live", () => {
+    expect(classifyProbe(probe({ code: 0, stdout: "ok" }))).toBe("live");
+  });
+
+  it("THE BUG: a signed-IN user whose probe fails for a NON-AUTH reason → inconclusive, NEVER signed-out", () => {
+    // Johannes-class failures: sandbox restriction, a wrong/failed binary, a generic crash — none is an auth
+    // verdict. The old regex matched loose words in this output and mislabeled these as "not signed in".
+    expect(classifyProbe(probe({ code: 1, stderr: "Error: operation not permitted (sandbox)" }))).toBe("inconclusive");
+    expect(classifyProbe(probe({ code: 127, stderr: "env: claude: No such file or directory" }))).toBe("inconclusive");
+    expect(classifyProbe(probe({ code: 1, stderr: "Tip: set your API key with ANTHROPIC_API_KEY" }))).toBe("inconclusive"); // bare "API key" is NOT signed-out
+    expect(classifyProbe(probe({ code: 1, stderr: "Please run `npm install` first" }))).toBe("inconclusive"); // generic "please run" (no login) is NOT signed-out
+  });
+
+  it("does NOT mistake SUCCESS wording for signed-out (authenticated / logged in as …)", () => {
+    // The old pattern matched `authenticat` and `logged in`, which appear in SUCCESS output → false signed-out.
+    expect(classifyProbe(probe({ code: 0, stdout: "Authenticated. You are logged in as user@example.com" }))).toBe("live");
+    expect(classifyProbe(probe({ code: 0, stdout: "Signed in — proceeding" }))).toBe("live");
+  });
+
+  it("a TIMEOUT → inconclusive, checked FIRST — a hung call is never read as signed-out (even with partial auth-ish output)", () => {
+    expect(classifyProbe(probe({ code: null, timedOut: true }))).toBe("inconclusive");
+    // timeout takes precedence over a partial output that would otherwise match — a network hang is not a verdict.
+    expect(classifyProbe(probe({ code: null, stdout: "Not logged in", timedOut: true }))).toBe("inconclusive");
+  });
+});
 
 describe("classifyAuthSignal (pure — no real auth needed)", () => {
   it("live → PASS", () => {

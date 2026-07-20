@@ -67,11 +67,48 @@ export function classifyAuthSignal(harness: Harness, signal: AuthSignal, require
   }
 }
 
-/** Auth-failure keywords shared across both harnesses' signed-out output. rc≠0 already means "failed"; this only
- *  refines the MESSAGE (signed-out vs inconclusive), so a miss still fails the gate — just less precisely. */
-const AUTH_FAIL = /log\s?in|logged in|authenticat|unauthor|\b401\b|invalid api key|api key|expired|not signed|credential|sign in|please run/i;
+/** CLEAR not-signed-in signals only — deliberately TIGHT. This regex is the sole thing that maps a probe to
+ *  `signed-out`, so it must match ONLY unambiguous auth failures (Nathan's bar: the doctor must not say untrue
+ *  things). The old pattern matched loose words — `api key`, `credential`, `please run`, even `logged in` /
+ *  `authenticat` (which appear in SUCCESS and non-auth output) — so a SIGNED-IN user whose probe failed for a
+ *  non-auth reason (a sandbox restriction, a wrong claude path, partial timeout output) was mislabeled
+ *  "signed-out". Anything not matched here is NOT called signed-out: it falls through to `live` (rc 0) or
+ *  `inconclusive` (couldn't verify). Each alternative is a phrase a harness emits ONLY when auth genuinely fails:
+ *    • "Not logged in" / "not signed in"        (claude -p prints this yet EXITS 0 — why we classify on output)
+ *    • "Please run /login" / "…`codex login`"   (the re-login prompt; requires the word "login" nearby)
+ *    • "Invalid API key" · 401 · Unauthorized · authentication_error
+ *    • an EXPIRED token / credential / session. */
+const AUTH_FAIL = new RegExp(
+  [
+    "\\bnot (?:logged|signed)[ -]?in\\b",
+    "please run\\b[^\\n]{0,40}\\blogin\\b",
+    "\\binvalid api key\\b",
+    "\\b401\\b",
+    "\\bunauthorized\\b",
+    "\\b(?:oauth |access |api |auth )?token (?:has )?expired\\b",
+    "\\b(?:credential|credentials|session|login) (?:has |have )?expired\\b",
+    "\\bauthentication[_ ]error\\b",
+  ].join("|"),
+  "i",
+);
 
-interface ProbeExec { code: number | null; stdout: string; stderr: string; timedOut: boolean; }
+export interface ProbeExec { code: number | null; stdout: string; stderr: string; timedOut: boolean; }
+
+/** PURE: classify a raw probe result into an AuthSignal. Unit-tested so the false-negative fix is provable
+ *  without real auth. ORDER is load-bearing:
+ *    1. a TIMEOUT is never an auth verdict → `inconclusive` (couldn't verify), FIRST — a hung network call
+ *       must never be read as "signed out";
+ *    2. only then, a CLEAR signed-out signal in the output → `signed-out` (checked before the rc-0 case because
+ *       `claude -p` prints "Not logged in" yet EXITS 0 — an rc check alone would false-PASS a signed-out claude);
+ *    3. rc 0 with no auth-failure signal → `live` (the call really went through);
+ *    4. any other error (rc≠0, no auth signal — a sandbox block, a bad path, a crash) → `inconclusive`, NOT
+ *       `signed-out`: we could not verify, and saying "not signed in" about a signed-in user is the bug we fix. */
+export function classifyProbe(res: ProbeExec): AuthSignal {
+  if (res.timedOut) return "inconclusive";
+  if (AUTH_FAIL.test(`${res.stdout}\n${res.stderr}`)) return "signed-out";
+  if (res.code === 0) return "live";
+  return "inconclusive";
+}
 
 /** Run a real minimal call for a harness in a throwaway cwd (so no CLAUDE.md / project hooks / MCP load), close
  *  stdin (so `-p`/`exec` don't wait on piped input), and normalize to an AuthSignal. NOT unit-tested — it needs
@@ -84,12 +121,7 @@ export async function probeHarness(harness: Harness): Promise<AuthSignal> {
       codex: ["exec", "--skip-git-repo-check", "Reply with exactly: ok"],
     };
     const res = await execProbe(harness, spec[harness], dir);
-    // Order matters: `claude -p` prints "Not logged in · Please run /login" but EXITS 0, so a rc check alone
-    // would false-pass a signed-out harness (the exact failure mode). Classify on the OUTPUT signal FIRST.
-    if (AUTH_FAIL.test(`${res.stdout}\n${res.stderr}`)) return "signed-out";
-    if (res.timedOut) return "inconclusive";
-    if (res.code === 0) return "live";
-    return "inconclusive";
+    return classifyProbe(res); // pure + unit-tested; timeout → inconclusive, only a clear signal → signed-out
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
