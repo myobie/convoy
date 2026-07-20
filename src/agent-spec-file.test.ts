@@ -83,3 +83,17 @@ describe("credentials ride in env — there is no account field", () => {
     expect(af.env?.["CODEX_HOME"]?.startsWith("$HOME/")).toBe(true);
   });
 });
+
+describe("render blocks in both published spellings", () => {
+  it("reads the KDL form, where dest is a positional argument", () => {
+    const af = parseAgentFile(
+      `agent "fabric" {\n  role "worker"\n  supervisor "cos"\n  render {\n    file ".claude/skills/triage/SKILL.md" from="skills/triage.md"\n    file ".claude/hooks/pre-tool.sh" from="hooks/pre-tool.sh" mode="0755"\n    dir ".claude/hooks" from="hooks/"\n  }\n}`,
+      "kdl",
+    );
+    expect(af.render?.file).toEqual([
+      { dest: ".claude/skills/triage/SKILL.md", from: "skills/triage.md" },
+      { dest: ".claude/hooks/pre-tool.sh", from: "hooks/pre-tool.sh", mode: "0755" },
+    ]);
+    expect(af.render?.dir).toEqual([{ dest: ".claude/hooks", from: "hooks/" }]);
+  });
+});

@@ -211,12 +211,23 @@ export function parseAgentFile(text: string, format: SpecFormat = "toml", idCont
   const renderRaw = doc["render"];
   if (renderRaw && typeof renderRaw === "object") {
     const r = renderRaw as Record<string, unknown>;
+    // The spec's TOML render blocks name the destination with `dest = "…"`; its KDL blocks give it as a
+    // POSITIONAL argument (`file ".claude/skills/…" from="…"`). Read either, so both published spellings
+    // resolve to the same entry.
+    const destOf = (e: Record<string, unknown>): string | undefined => {
+      if (typeof e["dest"] === "string") return e["dest"];
+      const args = e["_args"];
+      const first = Array.isArray(args) ? args[0] : undefined;
+      return typeof first === "string" ? first : undefined;
+    };
     const files = asArray(r["file"])
-      .filter((f) => typeof f["dest"] === "string" && typeof f["from"] === "string")
-      .map((f) => ({ dest: f["dest"] as string, from: f["from"] as string, ...(typeof f["mode"] === "string" ? { mode: f["mode"] as string } : {}) }));
+      .map((f) => ({ dest: destOf(f), from: f["from"], mode: f["mode"] }))
+      .filter((f): f is { dest: string; from: string; mode: unknown } => typeof f.dest === "string" && typeof f.from === "string")
+      .map((f) => ({ dest: f.dest, from: f.from, ...(typeof f.mode === "string" ? { mode: f.mode } : {}) }));
     const dirs = asArray(r["dir"])
-      .filter((d) => typeof d["dest"] === "string" && typeof d["from"] === "string")
-      .map((d) => ({ dest: d["dest"] as string, from: d["from"] as string }));
+      .map((d) => ({ dest: destOf(d), from: d["from"] }))
+      .filter((d): d is { dest: string; from: string } => typeof d.dest === "string" && typeof d.from === "string")
+      .map((d) => ({ dest: d.dest, from: d.from }));
     const block: RenderBlock = {};
     if (files.length > 0) block.file = files;
     if (dirs.length > 0) block.dir = dirs;
