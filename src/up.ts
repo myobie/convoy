@@ -97,6 +97,45 @@ export function survivingLimbs(dead: SupervisedSession, sessions: readonly Super
   return sessions.filter((o) => o.name !== dead.name && manifestWorkspace(o) === workspace && (!gone(o) || processAlive(o.pid)));
 }
 
+/** How to recover ONE gone permanent session — the routing decision, separated from performing it.
+ *
+ *  `restart` re-runs the session in place; `replay` cold-boots the whole agent from its manifest after
+ *  tearing `survivors` down; `covered` means another limb of the same agent already triggered this tick's
+ *  replay, which relaunches every limb, so acting again would double-spawn the agent. */
+export type LimbRecovery =
+  | { kind: "restart"; reason: "no-manifest" | "sidecar-only" }
+  | { kind: "covered"; workspace: string }
+  | { kind: "replay"; workspace: string; survivors: SupervisedSession[] };
+
+/** Choose the recovery for `s`, given every session and the workspaces already replayed THIS tick.
+ *
+ *  The load-bearing judgement is SCALE. Replay is agent-scale — it tears down every limb, including live
+ *  ones — so it must be gated on agent-scale death, which means the PROVIDER being gone. A dead ding
+ *  sidecar beside a live provider is a sidecar-scale problem and gets `restart`: the sidecar alone, which
+ *  is what this loop did before replay existed and which pty permits (its stateful-agent guard refuses
+ *  `role=agent`, not `role=ding`). Routing a sidecar death into replay would kill a healthy provider
+ *  mid-task to recover its watcher — a cure categorically worse than the disease.
+ *
+ *  The sidecar branch is conditioned on provider LIVENESS rather than firing for every dead sidecar, and
+ *  that condition is not cosmetic. When BOTH limbs are gone the provider is not alive, so the sidecar
+ *  falls through to `covered`/`replay` and is relaunched by the agent's single manifest replay. Restarting
+ *  it in place first would collide with the pinned id replay is about to re-spawn, turning a clean
+ *  recovery into a spurious park — the failure mode that makes "just restart any dead sidecar" wrong.
+ *
+ *  Pure: the caller performs the effects. */
+export function planLimbRecovery(
+  s: SupervisedSession,
+  sessions: readonly SupervisedSession[],
+  replayed: ReadonlySet<string>,
+): LimbRecovery {
+  const workspace = manifestWorkspace(s);
+  // No manifest (hand-spawned, never launched by convoy) → no launch spec to replay; keep the legacy path.
+  if (workspace === null) return { kind: "restart", reason: "no-manifest" };
+  if (isSidecarLimb(s) && providerAlive(workspace, sessions)) return { kind: "restart", reason: "sidecar-only" };
+  if (replayed.has(workspace)) return { kind: "covered", workspace };
+  return { kind: "replay", workspace, survivors: survivingLimbs(s, sessions) };
+}
+
 /** Did a manifest replay actually RECOVER the agent? Only if every declared limb came up (convoy#82).
  *
  *  The tempting reading — "something spawned, so we made progress" — collapses PARTIAL failure into
@@ -389,32 +428,23 @@ export async function up(opts: UpOptions): Promise<number> {
         // killed first — see host.replayManifest. A session with no manifest (hand-spawned, never launched
         // by convoy) has no launch spec to replay, so it keeps the in-place restart.
         //
-        // Replay is AGENT-SCALE, so it is gated on AGENT-SCALE death: the provider being gone. A dead ding
-        // SIDECAR beside a LIVE provider is a sidecar-scale problem and gets a sidecar-scale response — an
-        // in-place restart of the sidecar alone, which is what this loop did before replay existed and
-        // which pty permits (its stateful-agent guard refuses `role=agent`, not `role=ding`). Routing it
-        // into replay instead would kill a healthy provider mid-task to recover its watcher: a cure
-        // categorically worse than the disease, and worse than the bug replay was written to fix.
-        const workspace = manifestWorkspace(s);
+        // Replay is AGENT-SCALE, so it is gated on AGENT-SCALE death — see planLimbRecovery, which owns
+        // that routing as a pure decision. This block only PERFORMS the chosen recovery.
+        const plan = planLimbRecovery(s, sessions, replayed);
         let ok: boolean;
-        if (workspace === null) {
-          ok = await host.respawn(s); // no manifest → in-place restart (unchanged legacy path)
-        } else if (isSidecarLimb(s) && providerAlive(workspace, sessions)) {
-          // Sidecar died, provider still standing → restart the sidecar alone. Ordering note: this is
-          // checked BEFORE the `replayed` gate on purpose, but only fires while the provider LIVES. When
-          // both limbs are gone the provider is not alive, so a dead sidecar falls through to the replay
-          // path and is covered by the agent's single manifest replay — never restarted in place first,
-          // which would collide with the pinned id that replay is about to re-spawn.
-          ok = await host.respawn(s);
-        } else if (replayed.has(workspace)) {
+        if (plan.kind === "covered") {
           // Both limbs of ONE agent died this tick. The manifest relaunches every limb, so the first
           // replay already covered this session — replaying again would double-spawn the whole agent.
           continue;
+        } else if (plan.kind === "restart") {
+          // In place: either no manifest to replay, or a dead sidecar whose provider is still standing
+          // (restart the sidecar alone — the provider is never touched).
+          ok = await host.respawn(s);
         } else {
+          const { workspace, survivors } = plan;
           replayed.add(workspace);
-          // Kill any limb of THIS agent still standing (the classic case: provider died, ding survives
-          // bound to a corpse). Scoped to sessions sharing this workspace — never a pattern match.
-          const survivors = survivingLimbs(s, sessions);
+          // Survivors = any limb of THIS agent still standing (the classic case: provider died, ding
+          // survives bound to a corpse). Scoped to sessions sharing this workspace — never a pattern match.
           const r = await host.replayManifest(workspace, survivors);
           ok = replaySucceeded(r); // ANY failed limb = a failed attempt, so the cap actually advances
           emit(

@@ -4,7 +4,7 @@
 // independently mergeable in any order.
 
 import { describe, it, expect } from "vitest";
-import { replaySucceeded, survivingLimbs } from "./up.ts";
+import { planLimbRecovery, replaySucceeded, survivingLimbs } from "./up.ts";
 import { classifyFailedAttempt, type StrategyTags } from "./flapping-cap.ts";
 import { providerAlive, PtyHost, type ReplayIO, type SupervisedSession } from "./host.ts";
 
@@ -126,6 +126,68 @@ describe("providerAlive — routing a dead limb to sidecar-restart vs manifest-r
   it("another agent's live provider never counts — scoped by manifest workspace", () => {
     const other = limb("p2", "claude", { tags: { ptyfile: "/agents/p2/.convoy/pty.toml", "ptyfile.session": "claude" } });
     expect(providerAlive("/agents/p1", [other])).toBe(false);
+  });
+});
+
+// The routing itself. `providerAlive` above is only the discriminator; this is the decision that consumes
+// it, and it is where the regression actually lived — a dead sidecar reaching the replay branch is what
+// tore down a live provider. Extracted from the reconcile loop precisely so it can be asserted: without
+// the sidecar-only case, the first test here falls through to `replay`.
+describe("planLimbRecovery — restart the sidecar alone vs replay the whole agent (convoy#82)", () => {
+  const limb = (name: string, key: string, over: Partial<SupervisedSession> = {}): SupervisedSession => ({
+    name,
+    cwd: null,
+    command: "",
+    args: [],
+    status: "running" as never,
+    pid: null,
+    exitedAt: null,
+    exitCode: null,
+    tags: { ptyfile: "/agents/p1/.convoy/pty.toml", "ptyfile.session": key },
+    ...over,
+  });
+  const none = new Set<string>();
+
+  it("ACCEPTANCE: dead sidecar + LIVE provider → restart the sidecar alone, NEVER replay", () => {
+    // The regression in one assertion: `replay` here tears down the live provider mid-task.
+    const provider = limb("p1", "claude");
+    const deadDing = limb("p1.ding", "ding", { status: "exited" as never, pid: null });
+    expect(planLimbRecovery(deadDing, [provider, deadDing], none)).toEqual({ kind: "restart", reason: "sidecar-only" });
+  });
+
+  it("dead provider + live sidecar → replay, tearing down the surviving sidecar first", () => {
+    const deadProvider = limb("p1", "claude", { status: "vanished" as never });
+    const liveDing = limb("p1.ding", "ding");
+    const plan = planLimbRecovery(deadProvider, [deadProvider, liveDing], none);
+    expect(plan.kind).toBe("replay");
+    expect(plan.kind === "replay" && plan.workspace).toBe("/agents/p1");
+    expect(plan.kind === "replay" && plan.survivors.map((s) => s.name)).toEqual(["p1.ding"]);
+  });
+
+  it("BOTH limbs dead → the sidecar REPLAYS rather than restarting in place (no collision with the pinned id)", () => {
+    // Conditioning the sidecar branch on provider liveness is what makes this work: an unconditional
+    // "restart any dead sidecar" would restart the ding here, then replay would re-spawn its pinned id
+    // on top of it — a spurious failure that parks a cleanly recoverable agent.
+    const deadProvider = limb("p1", "claude", { status: "vanished" as never });
+    const deadDing = limb("p1.ding", "ding", { status: "exited" as never, pid: null });
+    expect(planLimbRecovery(deadDing, [deadProvider, deadDing], none).kind).toBe("replay");
+  });
+
+  it("BOTH limbs dead, agent ALREADY replayed this tick → covered, so the agent is not double-spawned", () => {
+    const deadProvider = limb("p1", "claude", { status: "vanished" as never });
+    const deadDing = limb("p1.ding", "ding", { status: "exited" as never, pid: null });
+    const replayed = new Set(["/agents/p1"]);
+    expect(planLimbRecovery(deadDing, [deadProvider, deadDing], replayed)).toEqual({ kind: "covered", workspace: "/agents/p1" });
+  });
+
+  it("a live provider's replay is NOT suppressed by another agent's replay this tick", () => {
+    const deadProvider = limb("p1", "claude", { status: "vanished" as never });
+    expect(planLimbRecovery(deadProvider, [deadProvider], new Set(["/agents/p2"])).kind).toBe("replay");
+  });
+
+  it("no manifest at all → the legacy in-place restart, unchanged", () => {
+    const orphan = sess("hand-spawned", { strategy: "permanent" });
+    expect(planLimbRecovery(orphan, [orphan], none)).toEqual({ kind: "restart", reason: "no-manifest" });
   });
 });
 
