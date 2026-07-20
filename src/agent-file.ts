@@ -105,9 +105,16 @@ export function agentFilePath(catalog: string, identity: string): string {
   return join(catalog, `${identity}.toml`);
 }
 
-/** Does this decoded document declare an agent? Discovery keeps a catalog file only when BOTH required
- *  fields are present, per the spec ("processing files containing `identity` and `role` fields"). This is
- *  what lets a catalog hold non-spec files — a README, a shared fragment — without them becoming agents. */
+/** Does this document CLAIM to be an agent spec? The spec says discovery processes "files containing
+ *  `identity` and `role` fields", but requiring both to even be RECOGNISED means a spec that misspells or
+ *  omits one is silently not an agent — the file sits in the catalog looking declared while nothing runs,
+ *  with no error anywhere. So recognition is EITHER field (a claim) and completeness is a validation
+ *  error (see parseAgentFile). A file with neither field is genuinely not a spec and is skipped. */
+export function looksLikeAgentSpec(doc: SpecDoc): boolean {
+  return typeof doc["identity"] === "string" || typeof doc["role"] === "string";
+}
+
+/** Is this a COMPLETE agent spec — both required fields present? */
 export function isAgentSpecDoc(doc: SpecDoc): boolean {
   return typeof doc["identity"] === "string" && typeof doc["role"] === "string";
 }
