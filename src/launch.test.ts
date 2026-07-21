@@ -7,6 +7,7 @@ import { bootPrompt, dingCommand, discoverSmalltalkDir, harnessCommand, regenera
 import type { AgentSpec } from "./agent-spec.ts";
 import { stRootOf } from "./paths.ts";
 import { writeNetworkConfig } from "./network-config.ts";
+import { parse as tomlParse } from "smol-toml";
 
 describe("native launch command builders (cold-start boot-prompt)", () => {
   it("harnessCommand claude: exec claude with the mode + boot prompt, NO poker, NO --resume", () => {
@@ -146,6 +147,34 @@ describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
       const toml = readFileSync(join(dir, ".convoy", "pty.toml"), "utf8");
       expect(toml).toContain(`ding silber.convoy --identity silber.convoy-claude --root ${stRootOf(net)}`);
       expect(toml).not.toContain("st ding");
+    } finally {
+      rmSync(net, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("network env is merged into BOTH sessions, UNDER the derived wiring; per-agent env overrides it", () => {
+    const net = mkdtempSync(join(tmpdir(), "convoy-netenv-"));
+    const dir = mkdtempSync(join(tmpdir(), "convoy-ptytoml-netenv-"));
+    try {
+      // a fleet-wide knob (PTY_REAP_ON_EXIT) + a HIJACK attempt on ST_AGENT + a key the agent overrides.
+      writeNetworkConfig(net, { name: "ournet", env: { PTY_REAP_ON_EXIT: "false", ST_AGENT: "hijacked", SHARED: "net" } });
+      writePtyToml(dir, spec({ networkRoot: net, env: { SHARED: "agent-wins" } }));
+      const doc = tomlParse(readFileSync(join(dir, ".convoy", "pty.toml"), "utf8")) as {
+        sessions: { claude: { env: Record<string, string> }; ding: { env: Record<string, string> } };
+      };
+      const harness = doc.sessions.claude.env;
+      const ding = doc.sessions.ding.env;
+
+      // the fleet knob lands on BOTH sessions — the ding daemon reads PTY_REAP_ON_EXIT from its OWN env.
+      expect(harness["PTY_REAP_ON_EXIT"]).toBe("false");
+      expect(ding["PTY_REAP_ON_EXIT"]).toBe("false");
+      // the derived wiring ALWAYS wins — a network env can't repoint ST_AGENT.
+      expect(harness["ST_AGENT"]).toBe("silber.convoy-claude");
+      expect(ding["ST_AGENT"]).toBe("silber.convoy-claude");
+      // a per-agent env key overrides the network default (harness); the ding has no per-agent env → network value.
+      expect(harness["SHARED"]).toBe("agent-wins");
+      expect(ding["SHARED"]).toBe("net");
     } finally {
       rmSync(net, { recursive: true, force: true });
       rmSync(dir, { recursive: true, force: true });
