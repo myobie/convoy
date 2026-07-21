@@ -21,8 +21,8 @@ import {
   type StrategyTags,
 } from "./flapping-cap.ts";
 import { HostLock } from "./host-lock.ts";
-import { commandHashOf, gone, isPermanent, isSidecarLimb, logicalId, manifestWorkspace, processAlive, providerAlive, PtyHost, type SupervisedSession } from "./host.ts";
-import { agentBusId, readCatalog, reconcilePlan } from "./reconcile.ts";
+import { commandHashOf, freeSession, gone, isPermanent, isSidecarLimb, logicalId, manifestWorkspace, processAlive, providerAlive, PtyHost, readManifestDef, spawnManifestSession, workspaceOfPtyfile, type SupervisedSession } from "./host.ts";
+import { agentBusId, dingHealthPlan, readCatalog, reconcilePlan } from "./reconcile.ts";
 import { agentFileToSpec, catalogDir } from "./agent-file.ts";
 import { declareCatalogSync } from "./fabric-sync.ts";
 import { nativeLaunch } from "./launch.ts";
@@ -353,7 +353,7 @@ export async function up(opts: UpOptions): Promise<number> {
   const permanentKeys = new Set<string>();
   const supervised = new Set<string>();
   const workerDinged = new Set<string>(); // gone workers aren't respawned → dedup so we ding each once
-  const results = { spawned: 0, adopted: 0, failed: 0, flapping: 0, retired: 0 }; // one-shot reconcile summary (--once)
+  const results = { spawned: 0, adopted: 0, failed: 0, flapping: 0, retired: 0, dingsHealed: 0 }; // one-shot reconcile summary (--once)
   const thisHost = shortHostname(); // the catalog host-filter key — up only launches/adopts agents whose host is us
   const notify = opts.notify ?? [];
   const dingTargets = (crashed: SupervisedSession, sessions: readonly SupervisedSession[]): string[] => crashDingTargets(crashed, sessions, notify, busIdOf);
@@ -574,6 +574,40 @@ export async function up(opts: UpOptions): Promise<number> {
         }
       }
     }
+
+    // DING-HEALTH pass (agent-centric — the reconcile-recreates-missing/unhealthy-ding gap, issue #82's
+    // sibling). The loop above is SESSION-centric: it iterates existing pty sessions, so a ding whose process
+    // was killed AND whose record was GC'd is simply absent from the list and never respawned; and a
+    // killed-but-registered ding lost its `strategy=permanent` tag (`pty kill` strips it) so the permanent
+    // branch skips it. Either way a LIVE agent can be left with a DEAD ding — the mass-ding-kill incident (14
+    // dings stayed dead until a full agent restart). So, per LIVE harness whose manifest DECLARES a ding, ensure
+    // the ding process is alive; REPLAY it from the manifest (verbatim `st ding …` + durable ST_ROOT/PTY_ROOT)
+    // if missing or dead. Health today = process-alive (`kill -0`); a richer ding health signal (the Rust ding)
+    // plugs in at the `processAlive` check below. Runs in BOTH `convoy up` and `--once`.
+    {
+      const current = await host.sessions();
+      const actions = dingHealthPlan(current, (pf) => readManifestDef(pf, "ding"));
+      for (const a of actions) {
+        const ptyfile = a.harness.tags["ptyfile"] as string; // dingHealthPlan only emits actions for harnesses with a ptyfile
+        const dingName = a.staleDing?.name ?? a.dingDef.id ?? `${a.harness.name}.ding`;
+        const id = busIdOf(a.harness) ?? logicalId(a.harness);
+        try {
+          freeSession(dingName); // drop a stale (gone) record so the stable id re-spawns cleanly
+          const spawned = await spawnManifestSession(workspaceOfPtyfile(ptyfile), a.dingDef, root);
+          results.dingsHealed++;
+          emit(
+            { type: "ding_heal", identity: id, ding: spawned, reason: a.staleDing ? "dead" : "missing", ts: isoString(now) },
+            `[convoy-up] ding heal ${id} — ding was ${a.staleDing ? "DEAD (process gone)" : "MISSING (no session)"}; respawned ${spawned}`,
+          );
+        } catch (e) {
+          results.failed++;
+          emit(
+            { type: "ding_heal_failed", identity: id, ding: dingName, error: e instanceof Error ? e.message : String(e), ts: isoString(now) },
+            `[convoy-up] ding heal FAILED for ${id} (${dingName}): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+    }
   };
 
   // WATCH + TIMER (Nathan): `convoy up` reconciles on a timer AND on catalog-folder changes, so a dropped or
@@ -605,8 +639,8 @@ export async function up(opts: UpOptions): Promise<number> {
   // cron + manual healing. --json emits the structured summary (see emit); text prints the human line.
   if (opts.once === true) {
     emit(
-      { type: "once_summary", network: root, spawned: results.spawned, adopted: results.adopted, failed: results.failed, flapping: results.flapping, retired: results.retired, ts: isoString(new Date()) },
-      `[convoy-up] once: reconciled ${root} — launched/spawned ${results.spawned}, adopted ${results.adopted} (already alive), retired ${results.retired}, failed ${results.failed}, flapping ${results.flapping}`,
+      { type: "once_summary", network: root, spawned: results.spawned, adopted: results.adopted, failed: results.failed, flapping: results.flapping, retired: results.retired, dingsHealed: results.dingsHealed, ts: isoString(new Date()) },
+      `[convoy-up] once: reconciled ${root} — launched/spawned ${results.spawned}, adopted ${results.adopted} (already alive), retired ${results.retired}, healed ${results.dingsHealed} ding(s), failed ${results.failed}, flapping ${results.flapping}`,
     );
   }
 

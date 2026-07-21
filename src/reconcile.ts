@@ -9,6 +9,7 @@
 // src/fabric-sync.ts), and B's reconcile sees host==B + launches it. No RPC — the synced folder IS the
 // scheduler. Pure (no side effects) so it's unit-testable; up executes the plan.
 
+import type { PtySessionDef } from "@compoundingtech/pty/client";
 import type { AgentFile } from "./agent-file.ts";
 import { gone, processAlive, type SupervisedSession } from "./host.ts";
 
@@ -71,4 +72,48 @@ export function reconcilePlan(
     else plan.launch.push(entry);
   }
   return plan;
+}
+
+/** One ding-health repair: a LIVE harness whose ding sidecar is missing or dead, the manifest def to replay it
+ *  from, and the stale ding session (if any) to free first. */
+export interface DingHealAction {
+  harness: SupervisedSession;
+  dingDef: PtySessionDef;
+  staleDing: SupervisedSession | null;
+}
+
+/** Which LIVE agents have a missing/unhealthy ding sidecar — AGENT-centric, unlike the SESSION-centric respawn
+ *  loop. For each harness (role=agent) that is alive and whose manifest DECLARES a ding, the ding is healthy iff
+ *  a ding session exists for the same pty.toml AND its process is alive; otherwise it needs a manifest replay.
+ *  `dingDefOf` reads the manifest's ding def for a ptyfile (injected → keeps this pure/testable); null means the
+ *  agent declares no ding, so skip it. `isAlive` defaults to the real pid probe. Pure.
+ *
+ *  This is the reconcile-recreates-missing/unhealthy-ding fix (issue #82's sibling). Two ways the session loop
+ *  misses a dead ding, both leaving a LIVE agent ding-less until a full restart: (1) a ding whose process was
+ *  killed AND whose record was GC'd is absent from the session list entirely → nothing to respawn; (2) a
+ *  killed-but-registered ding lost its `strategy=permanent` tag (`pty kill` strips it) → the permanent-respawn
+ *  branch skips it. Anchoring on the LIVE harness + the declared manifest catches both. */
+export function dingHealthPlan(
+  sessions: SupervisedSession[],
+  dingDefOf: (ptyfile: string) => PtySessionDef | null,
+  isAlive: (pid: number | null) => boolean = processAlive,
+): DingHealAction[] {
+  const dingBy = new Map<string, SupervisedSession>(); // ptyfile → its ding session
+  for (const s of sessions) {
+    const pf = s.tags["ptyfile"];
+    if (pf && s.tags["ptyfile.session"] === "ding") dingBy.set(pf, s);
+  }
+  const out: DingHealAction[] = [];
+  for (const s of sessions) {
+    if (s.tags["role"] !== "agent") continue; // harness sessions only (the ding sidecar is role=ding)
+    if (gone(s) && !isAlive(s.pid)) continue; // a DEAD harness is the respawn/launch paths' job, not this one
+    const ptyfile = s.tags["ptyfile"];
+    if (!ptyfile) continue;
+    const dingDef = dingDefOf(ptyfile);
+    if (!dingDef) continue; // agent declares no ding (e.g. a claude agent on the MCP transport)
+    const ding = dingBy.get(ptyfile) ?? null;
+    if (ding && isAlive(ding.pid)) continue; // ding healthy → nothing to do
+    out.push({ harness: s, dingDef, staleDing: ding });
+  }
+  return out;
 }

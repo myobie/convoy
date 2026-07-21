@@ -6,11 +6,13 @@
 import { basename, dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import {
+  cleanupAll,
   isGone,
   listSessions,
   readPtyFile,
   spawnDaemon,
   updateTags,
+  type PtySessionDef,
   type SessionInfo,
 } from "@compoundingtech/pty/client";
 import { commandFingerprint, parseStrategyTags, type StrategyTags } from "./flapping-cap.ts";
@@ -31,23 +33,53 @@ function cleanEnv(overlay: NodeJS.ProcessEnv): Record<string, string> {
 export async function spawnFromPtyFile(dir: string, root: string | null): Promise<{ spawned: string[]; failed: string[] }> {
   if (root) process.env["PTY_ROOT"] = `${root}/pty`;
   // The manifest lives in the workspace's .convoy/ overlay; the SESSIONS still run in the workspace
-  // (cwd: dir below), which decouples the manifest location from the working dir.
+  // (cwd: dir, via spawnManifestSession), which decouples the manifest location from the working dir.
   const file = readPtyFile(join(dir, CONVOY_DIR));
-  const tomlPath = join(dir, CONVOY_DIR, "pty.toml");
   const spawned: string[] = [];
   const failed: string[] = [];
   for (const def of file.sessions) {
-    const name = def.id ?? `${def.shortName}-${randomBytes(3).toString("hex")}`;
-    const tags: Record<string, string> = { ...(def.tags ?? {}), ptyfile: tomlPath, "ptyfile.session": def.shortName };
-    const env = cleanEnv({ ...process.env, ...(def.env ?? {}), ...(root ? { ST_ROOT: stRootOf(root), PTY_ROOT: `${root}/pty` } : {}) });
     try {
-      await spawnDaemon({ name, command: "sh", args: ["-c", def.command], displayCommand: def.command, cwd: dir, displayName: def.displayName, tags, env });
-      spawned.push(name);
+      spawned.push(await spawnManifestSession(dir, def, root));
     } catch {
       failed.push(def.shortName);
     }
   }
   return { spawned, failed };
+}
+
+/** Spawn ONE session def from a pty.toml manifest via `spawnDaemon` — the port's launch-absorb, per session.
+ *  Shared by `spawnFromPtyFile` (bring up the whole manifest) and the reconcile respawn / ding-health
+ *  recovery (replay a single session). Bakes the durable ST_ROOT/PTY_ROOT so a replay never loses the network
+ *  pin; the session's own env (incl. ST_AGENT) rides in `def.env`. `workspace` is the session cwd (the manifest
+ *  lives in `<workspace>/.convoy/`). Returns the spawned session name. Does NOT free a stale record — a REPLAY
+ *  caller `freeSession()`s the id first (see `respawn` / the ding-health pass); a fresh bring-up has no record. */
+export async function spawnManifestSession(workspace: string, def: PtySessionDef, root: string | null): Promise<string> {
+  const tomlPath = join(workspace, CONVOY_DIR, "pty.toml");
+  const name = def.id ?? `${def.shortName}-${randomBytes(3).toString("hex")}`;
+  const tags: Record<string, string> = { ...(def.tags ?? {}), ptyfile: tomlPath, "ptyfile.session": def.shortName };
+  const env = cleanEnv({ ...process.env, ...(def.env ?? {}), ...(root ? { ST_ROOT: stRootOf(root), PTY_ROOT: `${root}/pty` } : {}) });
+  await spawnDaemon({ name, command: "sh", args: ["-c", def.command], displayCommand: def.command, cwd: workspace, displayName: def.displayName, tags, env });
+  return name;
+}
+
+/** Read a single session def (by its toml key / `shortName`) from the pty.toml at `ptyfile` — the
+ *  `<workspace>/.convoy/pty.toml` path stored in a session's `ptyfile` tag. The manifest is the source of
+ *  truth for the verbatim command + durable env, so a respawn REPLAYS it rather than reconstructing from
+ *  live pty metadata (which dropped the `sh -c "exec claude …"` wrapper and came back a bare shell — the
+ *  capstone LOOP-CLOSED regression). Returns null if the file/def is unreadable or absent. */
+export function readManifestDef(ptyfile: string, shortName: string): PtySessionDef | null {
+  try {
+    const file = readPtyFile(dirname(ptyfile)); // ptyfile is <ws>/.convoy/pty.toml; readPtyFile takes the dir
+    return file.sessions.find((d) => d.shortName === shortName) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Free a session's on-disk record + socket (pty's `cleanupAll`) so its stable id can be re-spawned cleanly.
+ *  Called before a manifest REPLAY drops the stale (gone) record. Safe on a non-existent name (no-op). */
+export function freeSession(name: string): void {
+  cleanupAll(name);
 }
 
 /** One session as convoy's host sees it, projected from pty's typed `SessionInfo` + `SessionMetadata`. */
@@ -194,13 +226,28 @@ export class PtyHost {
     updateTags(name, {}, [key]);
   }
 
-  /** Respawn a gone session IN PLACE via `pty restart -y <name>` — SIGTERM + respawn using the STORED
-   *  metadata.command, which PRESERVES the agent's real command verbatim (pty-claude's guidance).
-   *  Reconstructing it via `spawnDaemon(command, args)` loses it — an agent's `sh -c "… exec claude …"`
-   *  came back a bare shell, failing the capstone's LOOP-CLOSED gate. PTY_ROOT is pinned in the process
-   *  env by the constructor, so the CLI targets the right registry. */
+  /** Respawn a gone session by REPLAYING its pty.toml manifest via `spawnDaemon` — NOT `pty restart`.
+   *  `pty restart` is unusable for a headless supervisor (VERIFIED): pty's stateful-agent guard makes it
+   *  `exit 1` on a `role=agent` session unless `--force` (so a dead permanent AGENT was never respawned —
+   *  reconcile only bumped `failed`; the root of issue #82), and it otherwise tries to ATTACH after the
+   *  respawn, which HANGS a non-TTY host. Replaying the manifest re-runs the verbatim stored command with
+   *  the durable ST_ROOT/PTY_ROOT env — the primitive `convoy reload`/`spawnFromPtyFile` already use and
+   *  that convoy-rust independently adopted (pty rm + pty up). `freeSession` drops the stale (gone) record so
+   *  the stable id re-spawns cleanly. Returns false if the manifest/def can't be resolved or the spawn throws
+   *  (honest failure the caller surfaces — better than the old silent `pty restart` no-op). */
   async respawn(s: SupervisedSession): Promise<boolean> {
-    return (await run("pty", ["restart", "-y", s.name])).ok;
+    const ptyfile = s.tags["ptyfile"];
+    const sessionKey = s.tags["ptyfile.session"];
+    if (!ptyfile || !sessionKey) return false; // not a convoy manifest session — nothing to replay
+    const def = readManifestDef(ptyfile, sessionKey);
+    if (!def) return false;
+    try {
+      freeSession(s.name); // free the stale record + socket before re-spawning the same stable id
+      await spawnManifestSession(workspaceOfPtyfile(ptyfile), def, this.root);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Stop a session (teardown). Residual `pty kill` shell — the client doesn't export a daemon-kill;
