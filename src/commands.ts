@@ -29,7 +29,8 @@ import { runFullOrgSuite, runReadinessSuite } from "./doctor/suite.ts";
 import { structureChecks } from "./doctor/structure.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
-import { isValidModel, preflight, resolvedPersonaPath, shortHostname, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
+import { adHocNotice, generateAdHocIdentity, validateRunIdentity } from "./run.ts";
+import { busAgentId, isValidModel, preflight, resolvedPersonaPath, shortHostname, type AgentSpec, type Harness, type Transport } from "./agent-spec.ts";
 import { claudeConfigPath, codexConfigPath, pretrustDirs, pretrustDirsCodex } from "./trust.ts";
 
 // ---- arg helpers ----
@@ -892,6 +893,102 @@ export async function cmdCos(args: string[]): Promise<number> {
   const rc = await launchSpec(spec, { dryRun, force: hasFlag(args, "--force") });
   if (rc === 0 && !dryRun) out("The CoS will run its first-run interview on boot.");
   return rc;
+}
+
+/** `convoy run` — launch an AD-HOC session: the runnable core with NO declaration on top.
+ *
+ *  Structurally this is `cmdCos`'s shape (build an AgentSpec, hand it to launchSpec) generalized past the
+ *  hardcoded chief-of-staff, and it writes NO catalog entry for the same reason `cmdCos` doesn't. The
+ *  difference from every other launch is what it REFUSES to promise; see run.ts for the full contract
+ *  delta and why an "ephemeral declaration" was rejected.
+ *
+ *  `--permanent` is deliberately absent from the flag table: a permanent ad-hoc session is a contradiction
+ *  (nothing declares it, so nothing can bring it back), and `permanentOverride` is pinned false below so a
+ *  role whose default is permanent cannot smuggle respawn semantics in. */
+export async function cmdRun(args: string[]): Promise<number> {
+  const bad = unknownFlag(args, ...flagAllowList("run"));
+  if (bad) {
+    err(`unrecognized flag "${bad}" for \`convoy run\` — refusing rather than silently ignoring it. See \`convoy run --help\`.`);
+    return 2;
+  }
+
+  // Role defaults to `worker`: an ad-hoc session is a hands-on one-off, and worker is the least-privileged
+  // role that still gets a persona. Spawner roles are permitted but are a poor fit — nothing it spawns is
+  // declared either, and the children outlive the ad-hoc parent that has no supervisor to escalate to.
+  const roleRaw = positionals(args)[0] ?? "worker";
+  const role = parseRole(roleRaw);
+  if (!role) {
+    err(`unknown role "${roleRaw}". Valid: ${ROLES.join(", ")}`);
+    return 2;
+  }
+
+  const harnessRaw = (optValue(args, "--harness") ?? "claude").toLowerCase();
+  if (harnessRaw !== "claude" && harnessRaw !== "codex") {
+    err(`unknown harness "${harnessRaw}". Valid: claude, codex`);
+    return 2;
+  }
+  const transport = resolveTransport(args);
+  if (!transport) {
+    err(`unknown transport. Valid: ding, mcp`);
+    return 2;
+  }
+  const model = optValue(args, "--model");
+  if (model !== null && !isValidModel(model)) {
+    err(`invalid --model "${model}" — use letters, digits, and . _ : / - (start alphanumeric), e.g. claude-fable-5`);
+    return 2;
+  }
+
+  const network = resolveNetworkRoot(optValue(args, "--network"));
+
+  // An explicit --identity is validated against the DECLARED catalog, not just the live bus: colliding with
+  // a declared agent that happens to be down right now would still point this session at that agent's
+  // durable context. Generated identities skip the check — they cannot collide by construction.
+  const explicit = optValue(args, "--identity");
+  let identity: string;
+  if (explicit !== null) {
+    const declared = readCatalog(network).entries.map((e) => e.af.identity);
+    const problem = validateRunIdentity(explicit, declared);
+    if (problem) {
+      err(problem);
+      return 2;
+    }
+    identity = explicit;
+  } else {
+    identity = generateAdHocIdentity();
+  }
+
+  // Workspace: --dir, else the CURRENT directory. Unlike `convoy add`, a missing workspace is NOT an error
+  // and no worktree is cut off the megarepo — an ad-hoc session is normally "a harness, here, now", which
+  // is exactly what the launcher aliases it replaces did. Cutting a worktree would leave durable
+  // filesystem residue behind a session that promises no durability.
+  const dir = optValue(args, "--dir");
+  const workingDir = dir ? resolve(expandTilde(dir)) : process.cwd();
+
+  const dryRun = hasFlag(args, "--dry-run");
+  const spec: AgentSpec = {
+    harness: harnessRaw,
+    role,
+    identity,
+    transport,
+    networkRoot: network,
+    // An ad-hoc session declares no launcher override and no extra environment:
+    // it is the runnable core, so it takes the harness and the network as-is.
+    bin: null,
+    env: {},
+    personaOverride: optValue(args, "--persona"),
+    workingDir,
+    permanentOverride: false, // never respawned — see the doc comment above
+    prefix: optValue(args, "--prefix"),
+    configDir: optValue(args, "--config-dir"),
+    model,
+  };
+
+  out(`convoy run — ${identity} (${harnessRaw}, ${role})`);
+  out(`workspace: ${workingDir}`);
+  out(adHocNotice(identity, busAgentId(spec), role));
+  out();
+
+  return launchSpec(spec, { dryRun, force: hasFlag(args, "--force") });
 }
 
 // ---- `convoy ls --tree`: spawn-parentage tree (cos → supervisor → worker) + a remote section ----

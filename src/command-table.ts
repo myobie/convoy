@@ -148,6 +148,28 @@ export const COMMANDS: readonly CommandSpec[] = [
     ],
   },
   {
+    name: "run",
+    // No `--permanent`: a permanent ad-hoc session is a contradiction — nothing declares it, so nothing
+    // can bring it back. `cmdRun` pins permanentOverride=false so a permanent-by-default role can't
+    // smuggle respawn semantics in either.
+    desc: "Launch an ad-hoc session — not declared, not reconciled, not respawned",
+    flags: [
+      IDENTITY_FLAG,
+      HARNESS_FLAG,
+      { name: "model", desc: "Per-agent model id", kind: "value" },
+      TRANSPORT_FLAG,
+      { name: "mcp", desc: "Shorthand for --transport mcp", kind: "bool" },
+      NETWORK_FLAG,
+      { name: "dir", desc: "Workspace dir (default: cwd)", kind: "value", takesPath: true },
+      PERSONA_FLAG,
+      { name: "prefix", desc: "Session-id prefix (default: short hostname)", kind: "value" },
+      CONFIG_DIR_FLAG,
+      DRY_RUN_FLAG,
+      { name: "force", desc: "Overwrite a foreign pty.toml in the workspace", kind: "bool" },
+    ],
+    positional: { desc: "Role (default: worker)", values: ROLE_SPELLINGS },
+  },
+  {
     name: "up",
     desc: "Host a network in the foreground (supervisor + flapping-cap)",
     // No --network: the network is the positional, and --network is rejected (rc=2).
