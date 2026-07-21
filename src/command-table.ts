@@ -175,7 +175,6 @@ export const COMMANDS: readonly CommandSpec[] = [
     // No --network: the network is the positional, and --network is rejected (rc=2).
     flags: [
       { name: "once", desc: "One-shot reconcile-and-exit (no daemon)", kind: "bool" },
-      { name: "keep-sessions", desc: "Leave sessions running on exit", kind: "bool" },
       JSON_FLAG,
       { name: "reconcile-interval", desc: "Reconcile interval", kind: "value" },
       { name: "fast-fail-window", desc: "Fast-fail window", kind: "value" },

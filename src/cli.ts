@@ -102,7 +102,6 @@ async function cmdUp(args: string[]): Promise<number> {
   const num = (v: string | null): number | undefined => (v === null ? undefined : Number(v));
   opts.json = hasFlag(args, "--json");
   opts.once = hasFlag(args, "--once");
-  opts.keepSessions = hasFlag(args, "--keep-sessions");
   opts.reconcileInterval = num(optValue(args, "--reconcile-interval"));
   opts.fastFailWindow = num(optValue(args, "--fast-fail-window"));
   opts.fastFailLimit = num(optValue(args, "--fast-fail-limit"));

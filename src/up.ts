@@ -35,7 +35,6 @@ export interface UpOptions {
   reconcileInterval?: number | undefined;
   json?: boolean;
   once?: boolean;
-  keepSessions?: boolean;
   /** Extra identities to ding on a crash/flap, on top of the auto-derived orchestrators (permanent members). */
   notify?: string[];
 }
@@ -615,7 +614,6 @@ export async function up(opts: UpOptions): Promise<number> {
   // workloads. Agents are long-lived and keep running their last orders; a supervisor restart
   // re-adopts the still-running sessions (the reconcile skips live ones — `if (!gone(s)) continue`).
   // To intentionally stop the network, use `convoy down` (explicit teardown), not a `convoy up` stop.
-  void opts.keepSessions; // retained for API compat; teardown no longer kills regardless.
   emit(
     { type: "teardown", stopped: 0, kept: supervised.size },
     `[convoy-up] stopping host; leaving ${supervised.size} session(s) running — agents are decoupled from the supervisor (use \`convoy down\` to tear down).`,

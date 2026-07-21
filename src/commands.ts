@@ -47,7 +47,7 @@ export function positionals(args: string[]): string[] {
   }
   return out;
 }
-const BOOL_FLAGS = new Set(["--dry-run", "--yes", "-y", "--mcp", "--permanent", "--purge", "--json", "--live-only", "--no-channel", "--force", "--once", "--keep-sessions", "--quiet"]);
+const BOOL_FLAGS = new Set(["--dry-run", "--yes", "-y", "--mcp", "--permanent", "--purge", "--json", "--live-only", "--no-channel", "--force", "--once", "--quiet"]);
 /** Value of `--name` — supports both `--name value` and `--name=value` (the `=` form previously fell
  *  through and silently defaulted, e.g. `--harness=codex` → claude). */
 export function optValue(args: string[], name: string): string | null {
