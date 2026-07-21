@@ -118,6 +118,36 @@ export function workspaceOfPtyfile(ptyfile: string): string {
   return basename(d) === CONVOY_DIR ? dirname(d) : d;
 }
 
+/** The workspace whose MANIFEST owns this session — `<workspace>` recovered from its `ptyfile` tag. Null
+ *  when the session carries no manifest (e.g. a hand-spawned permanent session convoy never launched):
+ *  there is no launch spec to replay, so recovery falls back to the in-place restart. Sessions sharing a
+ *  workspace are LIMBS OF ONE AGENT — this is the key recovery groups on, so a provider and its ding
+ *  sidecar are replayed together exactly once. */
+export function manifestWorkspace(s: SupervisedSession): string | null {
+  const pf = s.tags["ptyfile"];
+  return pf ? workspaceOfPtyfile(pf) : null;
+}
+
+/** The manifest session key that names the DING SIDECAR limb — the subordinate watcher, as opposed to the
+ *  PROVIDER limb that actually runs the harness (`claude` / `codex`). */
+export const DING_SESSION_KEY = "ding";
+
+/** Is this session an agent's ding SIDECAR rather than its provider? The two limbs are not peers, and
+ *  recovery must not treat them as such: the provider IS the agent (it holds the conversation and the
+ *  in-progress work), while the sidecar is a replaceable watcher bound to it. A sidecar's death says
+ *  nothing about the provider's health, so it is never grounds for tearing the provider down. */
+export function isSidecarLimb(s: SupervisedSession): boolean {
+  return s.tags["ptyfile.session"] === DING_SESSION_KEY;
+}
+
+/** Is the PROVIDER limb of `workspace`'s agent still standing? Recovery's routing question: a dead sidecar
+ *  next to a live provider is a sidecar-scale problem (restart the sidecar alone), whereas a dead sidecar
+ *  next to a dead provider is agent-scale (replay the whole manifest). Uses the same adopt-alive liveness
+ *  reading as everywhere else — reported-gone but pid-alive still counts as ALIVE. */
+export function providerAlive(workspace: string, sessions: readonly SupervisedSession[]): boolean {
+  return sessions.some((s) => manifestWorkspace(s) === workspace && !isSidecarLimb(s) && (!gone(s) || processAlive(s.pid)));
+}
+
 /** A stable, human-readable logical id — `<agent-dir>/<session-key>` (e.g. `convoy/claude`) from the
  *  persistent ptyfile tags; survives respawns + `pty kill`. Falls back to the pty id. */
 export function logicalId(s: SupervisedSession): string {
@@ -128,6 +158,13 @@ export function logicalId(s: SupervisedSession): string {
   // WORKSPACE, not the overlay dir (basename(dirname()) alone would yield ".convoy" for every agent).
   const dir = ptyfile ? basename(workspaceOfPtyfile(ptyfile)) : s.cwd ? basename(s.cwd) : "";
   return dir ? `${dir}/${session}` : session;
+}
+
+/** The two effects `replayManifest` sequences — stopping a live limb, and cold-booting the manifest.
+ *  Injectable so replay's ORDERING and error handling can be asserted without spawning real processes. */
+export interface ReplayIO {
+  kill: (name: string) => Promise<boolean>;
+  spawn: (workspace: string) => Promise<{ spawned: string[]; failed: string[] }>;
 }
 
 /** Drives pty natively via `@compoundingtech/pty/client`. `root` pins the network's `PTY_ROOT`. */
@@ -170,5 +207,43 @@ export class PtyHost {
    *  PTY_ROOT is already pinned in the process env by the constructor. */
   async kill(name: string): Promise<boolean> {
     return (await run("pty", ["kill", name])).ok;
+  }
+
+  /** REPLAY an agent's manifest — the recovery primitive (convoy#82). `respawn` above cannot serve this
+   *  case, for two independent reasons found by reproducing a provider death:
+   *
+   *    1. `pty restart` REFUSES agent-shaped sessions. pty's stateful-agent guard rejects any session
+   *       tagged `role=agent` unless `--force`, and its own message points the operator at the
+   *       supervisor: "Cycle it through its supervisor (e.g. `convoy up`) instead." convoy up's respawn
+   *       WAS `pty restart -y`, so the two sides deadlocked — pty deferred to convoy, convoy called the
+   *       refused command, and every permanent agent respawn failed. The guard is RIGHT (blindly
+   *       re-running stored argv can wedge a `claude --resume`); convoy was using the wrong primitive.
+   *    2. After a HARD death there is no daemon left to restart at all — nothing to `restart` onto.
+   *
+   *  Replay is what the guard defers to: not a blind argv re-run, but a fresh COLD BOOT from
+   *  `.convoy/pty.toml` — the launch spec. It re-reads the manifest and spawns the agent's whole limb set
+   *  from it, so the agent comes back running its declared boot ritual with no conversation pinned.
+   *
+   *  ALL limbs are relaunched together, and surviving ones are killed FIRST. The manifest pins stable
+   *  session ids (`<prefix>` / `<prefix>.ding`), so spawning over a live sidecar would collide on that id;
+   *  worse, a reused sidecar stays bound to the provider that just died. Tearing both down and replaying
+   *  the manifest is the only state that is simple to reason about: whatever the manifest says, is what
+   *  runs. */
+  async replayManifest(
+    workspace: string,
+    survivors: readonly SupervisedSession[],
+    // The two EFFECTS this method sequences, injected so the sequencing itself is testable. Everything
+    // that makes replay correct is ordering and result-propagation — kill before spawn, never the
+    // reverse; a throw becomes a reported failure, not an exception escaping into the reconcile loop —
+    // and none of that is observable without a seam. The defaults bind the real pty operations, so every
+    // caller is unchanged; only tests pass this third argument.
+    io: ReplayIO = { kill: (n) => this.kill(n), spawn: (w) => spawnFromPtyFile(w, this.root) },
+  ): Promise<{ spawned: string[]; failed: string[] }> {
+    for (const s of survivors) await io.kill(s.name);
+    try {
+      return await io.spawn(workspace);
+    } catch {
+      return { spawned: [], failed: ["<manifest unreadable>"] }; // a missing/corrupt pty.toml is a failed attempt, not a crash
+    }
   }
 }

@@ -4,7 +4,9 @@
 import { describe, it, expect } from "vitest";
 import {
   classify,
+  classifyFailedAttempt,
   commandFingerprint,
+  FLAPPING_STATUS,
   effectiveLimit,
   effectiveWindow,
   emptyStrategyTags,
@@ -138,5 +140,60 @@ describe("FlappingCap classifier", () => {
     expect(t.status).toBeNull();
     expect(t.commandHash).toBeNull();
     expect(t.lastRespawnAt).toBeNull();
+  });
+});
+
+// convoy#82 — the failed-ATTEMPT cap. `classify` infers a fast fail from the leaf's exit record, which is
+// structurally blind when the spawn never happened: the reproduction showed the counter pinned at 0/3 across
+// unbounded reconcile cycles, because with no new leaf `exitedAt` stayed EARLIER than `lastRespawnAt` and the
+// interval went negative. These pin the attempt-counting that closes that hole.
+describe("classifyFailedAttempt — a recovery attempt that never produced a leaf (convoy#82)", () => {
+  const runFailed = (t: StrategyTags, now = t0): Decision =>
+    classifyFailedAttempt({ session: "wk1", tags: t, currentHash: HASH_A, window: WINDOW, limit: LIMIT, now });
+
+  it("REGRESSION: the exit-record classifier cannot see a failed spawn — counter stays 0 forever", () => {
+    // The convoy#82 shape: the death is OLDER than the last respawn attempt, so the interval is negative.
+    // classify() reads that as "not a fast fail" and resets to 0 — every tick, unboundedly. This documents
+    // WHY the attempt-based cap exists; it is the behaviour that made the defect silent.
+    const dead = tags({ lastRespawnAt: at(500), consecutiveFastFails: 0 });
+    const d = run(dead, at(100)); // exitedAt EARLIER than lastRespawnAt
+    expect(d.kind).toBe("respawn");
+    if (d.kind === "respawn") expect(d.tags.consecutiveFastFails).toBe(0); // ← never advances
+  });
+
+  it("ACCEPTANCE: counts the attempt itself, so a manifest that cannot spawn ADVANCES the cap", () => {
+    const d = runFailed(tags({ consecutiveFastFails: 0 }));
+    expect(d.kind).toBe("respawn");
+    if (d.kind === "respawn") expect(d.tags.consecutiveFastFails).toBe(1);
+  });
+
+  it("ACCEPTANCE: PARKS at the limit instead of retrying forever — the defect's core symptom", () => {
+    const d = runFailed(tags({ consecutiveFastFails: LIMIT - 1 }));
+    expect(d.kind).toBe("flap");
+    if (d.kind === "flap") {
+      expect(d.tags.status).toBe(FLAPPING_STATUS);
+      expect(d.event.counter).toBe(LIMIT);
+      expect(d.event.limit).toBe(LIMIT);
+    }
+  });
+
+  it("never returns `skip` — the caller relies on always persisting an advanced counter", () => {
+    for (let n = 0; n < LIMIT + 2; n++) expect(runFailed(tags({ consecutiveFastFails: n })).kind).not.toBe("skip");
+  });
+
+  it("stamps lastRespawnAt + the command hash on a retry, so the NEXT real leaf is measurable", () => {
+    const now = at(900);
+    const d = runFailed(tags({ consecutiveFastFails: 0 }), now);
+    if (d.kind === "respawn") {
+      expect(d.tags.lastRespawnAt).toEqual(now);
+      expect(d.tags.commandHash).toBe(HASH_A);
+      expect(d.tags.status).toBeNull();
+    }
+  });
+
+  it("reuses the SAME cap as a crash loop — a park is clearable by the one existing operator gesture", () => {
+    // Parked state is byte-identical in shape to a crash-loop park, so `--rm strategy.status` clears either.
+    const parked = runFailed(tags({ consecutiveFastFails: LIMIT - 1 }));
+    if (parked.kind === "flap") expect(writtenTags(parked.tags)[TAG.status]).toBe(FLAPPING_STATUS);
   });
 });

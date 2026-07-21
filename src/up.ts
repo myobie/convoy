@@ -10,6 +10,7 @@ import { pretrustDirs, pretrustDirsCodex } from "./trust.ts";
 import { defaultConvoyNetwork, isNetworkName, networkDirForName, networkDirOfStRoot, stRootOf } from "./paths.ts";
 import {
   classify,
+  classifyFailedAttempt,
   effectiveLimit,
   effectiveWindow,
   isFlapping,
@@ -20,7 +21,7 @@ import {
   type StrategyTags,
 } from "./flapping-cap.ts";
 import { HostLock } from "./host-lock.ts";
-import { commandHashOf, gone, isPermanent, logicalId, processAlive, PtyHost, type SupervisedSession } from "./host.ts";
+import { commandHashOf, gone, isPermanent, isSidecarLimb, logicalId, manifestWorkspace, processAlive, providerAlive, PtyHost, type SupervisedSession } from "./host.ts";
 import { agentBusId, readCatalog, reconcilePlan } from "./reconcile.ts";
 import { agentFileToSpec, catalogDir } from "./agent-file.ts";
 import { declareCatalogSync } from "./fabric-sync.ts";
@@ -71,6 +72,87 @@ export function busIdOf(s: SupervisedSession): string | null {
  *  together cover an agent OOM; only the reaped-grandchild (Case B) remains, upstream of the exit record. See PR #41. */
 export function workerCrashed(status: SupervisedSession["status"], exitCode: number | null): boolean {
   return status === "vanished" || (status === "exited" && exitCode !== 0); // !== 0 dings nonzero (incl. an agent OOM = 137 via pty ≥ #72) AND a no-record null; only a reaped-grandchild OOM (Case B) escapes — OS-level follow-up
+}
+
+/** The OTHER limbs of `dead`'s agent that are still standing — the sessions manifest replay must tear down
+ *  before it relaunches (convoy#82). The classic shape is a provider that died while its ding sidecar kept
+ *  running: the manifest pins stable session ids, so spawning over that live sidecar collides on its id, and
+ *  a sidecar reused across a provider death is bound to a target that no longer exists.
+ *
+ *  Scoped by MANIFEST WORKSPACE, never by name pattern — an agent's limbs are exactly the sessions sharing
+ *  its `.convoy/pty.toml`, so this can't reach another agent's sessions. `dead` itself is excluded (it is the
+ *  one being replayed), and a limb reported gone but whose pid is still ALIVE counts as a survivor: the same
+ *  adopt-alive reasoning the respawn path uses, since killing is the point here and a live process must be
+ *  stopped before its id is reused. Pure → unit-testable. */
+export function survivingLimbs(dead: SupervisedSession, sessions: readonly SupervisedSession[]): SupervisedSession[] {
+  const workspace = manifestWorkspace(dead);
+  if (workspace === null) return [];
+  // A dead SIDECAR never tears anything down. Read symmetrically, the provider-death rule below would
+  // otherwise return the sidecar's own LIVE PROVIDER as a limb to kill — a supervisor destroying the
+  // in-progress work it exists to protect, and a breach of the ADOPT-ALIVE invariant the respawn path
+  // holds everywhere else. The limbs are not peers: the provider IS the agent, the sidecar is a
+  // replaceable watcher bound to it. `up` routes a recoverable sidecar to an in-place restart instead;
+  // this guard makes the pure function honest on its own, independent of that routing.
+  if (isSidecarLimb(dead)) return [];
+  return sessions.filter((o) => o.name !== dead.name && manifestWorkspace(o) === workspace && (!gone(o) || processAlive(o.pid)));
+}
+
+/** How to recover ONE gone permanent session — the routing decision, separated from performing it.
+ *
+ *  `restart` re-runs the session in place; `replay` cold-boots the whole agent from its manifest after
+ *  tearing `survivors` down; `covered` means another limb of the same agent already triggered this tick's
+ *  replay, which relaunches every limb, so acting again would double-spawn the agent. */
+export type LimbRecovery =
+  | { kind: "restart"; reason: "no-manifest" | "sidecar-only" }
+  | { kind: "covered"; workspace: string }
+  | { kind: "replay"; workspace: string; survivors: SupervisedSession[] };
+
+/** Choose the recovery for `s`, given every session and the workspaces already replayed THIS tick.
+ *
+ *  The load-bearing judgement is SCALE. Replay is agent-scale — it tears down every limb, including live
+ *  ones — so it must be gated on agent-scale death, which means the PROVIDER being gone. A dead ding
+ *  sidecar beside a live provider is a sidecar-scale problem and gets `restart`: the sidecar alone, which
+ *  is what this loop did before replay existed and which pty permits (its stateful-agent guard refuses
+ *  `role=agent`, not `role=ding`). Routing a sidecar death into replay would kill a healthy provider
+ *  mid-task to recover its watcher — a cure categorically worse than the disease.
+ *
+ *  The sidecar branch is conditioned on provider LIVENESS rather than firing for every dead sidecar, and
+ *  that condition is not cosmetic. When BOTH limbs are gone the provider is not alive, so the sidecar
+ *  falls through to `covered`/`replay` and is relaunched by the agent's single manifest replay. Restarting
+ *  it in place first would collide with the pinned id replay is about to re-spawn, turning a clean
+ *  recovery into a spurious park — the failure mode that makes "just restart any dead sidecar" wrong.
+ *
+ *  Pure: the caller performs the effects. */
+export function planLimbRecovery(
+  s: SupervisedSession,
+  sessions: readonly SupervisedSession[],
+  replayed: ReadonlySet<string>,
+): LimbRecovery {
+  const workspace = manifestWorkspace(s);
+  // No manifest (hand-spawned, never launched by convoy) → no launch spec to replay; keep the legacy path.
+  if (workspace === null) return { kind: "restart", reason: "no-manifest" };
+  if (isSidecarLimb(s) && providerAlive(workspace, sessions)) return { kind: "restart", reason: "sidecar-only" };
+  if (replayed.has(workspace)) return { kind: "covered", workspace };
+  return { kind: "replay", workspace, survivors: survivingLimbs(s, sessions) };
+}
+
+/** Did a manifest replay actually RECOVER the agent? Only if every declared limb came up (convoy#82).
+ *
+ *  The tempting reading — "something spawned, so we made progress" — collapses PARTIAL failure into
+ *  success, and partial failure is the shape this path produces most: replay kills the surviving limbs and
+ *  immediately re-spawns the manifest's PINNED session ids, and a spawn racing a kill on a pinned id is
+ *  precisely what throws. So the provider throws, the ding succeeds, and `spawned.length > 0` calls it a
+ *  win. The consequences compound: the success path runs, `classifyFailedAttempt` never fires, the
+ *  consecutive-failure counter stays pinned at 0, and the cap it feeds can never engage. The agent is
+ *  never recovered, never parked, and never dinged — it just churns, and because the counter persists to
+ *  tags, a fresh `--once` run inherits the same 0 and churns identically.
+ *
+ *  An agent is its limbs TOGETHER: a provider with no ding gets no work, a ding with no provider pokes a
+ *  corpse. Neither is a recovered agent, so neither is a success. Requiring a clean sweep makes the failure
+ *  visible to the cap on the very first attempt, which is what turns an unbounded silent retry into a
+ *  bounded one that parks and pages. */
+export function replaySucceeded(r: { spawned: readonly string[]; failed: readonly string[] }): boolean {
+  return r.failed.length === 0 && r.spawned.length > 0;
 }
 
 /** Who to ding when `crashed` crash-loops / vanishes: (a) the CoS — ALWAYS (a network-wide backstop),
@@ -249,6 +331,10 @@ export async function up(opts: UpOptions): Promise<number> {
 
   const tick = async (): Promise<void> => {
     const now = new Date();
+    // Manifest replay relaunches EVERY limb of an agent, so it must happen at most once per agent per
+    // tick. Keyed on the workspace (the manifest's home) — when a provider AND its ding sidecar are both
+    // gone, the first one reached replays both and the second finds itself already covered.
+    const replayed = new Set<string>();
 
     // PIECE 3 — CATALOG-DRIVEN reconcile (desired state). Read the SYNCED catalog, host-filter to THIS machine,
     // and: LAUNCH this host's active agents that aren't running yet (add now only DECLARES — up is what
@@ -342,10 +428,77 @@ export async function up(opts: UpOptions): Promise<number> {
       if (decision.kind === "skip") continue;
 
       if (decision.kind === "respawn") {
+        // RECOVERY (convoy#82) — REPLAY THE MANIFEST, don't restart the corpse.
+        //
+        // `pty restart -y` (the old primitive) failed here for two independent reasons, both reproduced:
+        // pty REFUSES agent-shaped sessions (`role=agent`) and tells the operator to cycle them through
+        // their supervisor — which is this loop, calling the refused command — and after a hard death
+        // there is no daemon left to restart at all. Every permanent agent respawn failed, forever.
+        //
+        // Replay is the supervisor-side path pty's guard defers to: re-read `.convoy/pty.toml` (the launch
+        // spec) and COLD BOOT the agent's whole limb set from it. Both limbs go together and survivors are
+        // killed first — see host.replayManifest. A session with no manifest (hand-spawned, never launched
+        // by convoy) has no launch spec to replay, so it keeps the in-place restart.
+        //
+        // Replay is AGENT-SCALE, so it is gated on AGENT-SCALE death — see planLimbRecovery, which owns
+        // that routing as a pure decision. This block only PERFORMS the chosen recovery.
+        const plan = planLimbRecovery(s, sessions, replayed);
+        let ok: boolean;
+        if (plan.kind === "covered") {
+          // Both limbs of ONE agent died this tick. The manifest relaunches every limb, so the first
+          // replay already covered this session — replaying again would double-spawn the whole agent.
+          continue;
+        } else if (plan.kind === "restart") {
+          // In place: either no manifest to replay, or a dead sidecar whose provider is still standing
+          // (restart the sidecar alone — the provider is never touched).
+          ok = await host.respawn(s);
+        } else {
+          const { workspace, survivors } = plan;
+          replayed.add(workspace);
+          // Survivors = any limb of THIS agent still standing (the classic case: provider died, ding
+          // survives bound to a corpse). Scoped to sessions sharing this workspace — never a pattern match.
+          const r = await host.replayManifest(workspace, survivors);
+          ok = replaySucceeded(r); // ANY failed limb = a failed attempt, so the cap actually advances
+          emit(
+            { type: "replay", identity: logicalId(s), workspace, spawned: r.spawned, failed: r.failed, killed: survivors.map((o) => o.name), ts: isoString(now) },
+            `[convoy-up] replay ${logicalId(s)} — cold-booted ${r.spawned.length} limb(s) from ${workspace}/.convoy/pty.toml${survivors.length ? ` (tore down ${survivors.length} surviving limb(s))` : ""}${r.failed.length ? ` — ${r.failed.length} FAILED` : ""}`,
+          );
+        }
+
+        // A replay that never spawned anything writes no exit record, so the leaf-based fast-fail
+        // detection below can never see it (that blindness is exactly what made convoy#82 an unbounded
+        // silent retry). Count the failed ATTEMPT against the same cap instead, so a manifest that cannot
+        // spawn parks and dings rather than looping forever.
+        if (!ok) {
+          const failDecision = classifyFailedAttempt({ session: s.name, tags: decision.tags, currentHash: commandHashOf(s), window, limit, now });
+          state.set(key, failDecision.tags);
+          host.setTags(s.name, writtenTags(failDecision.tags));
+          results.failed++;
+          if (failDecision.kind === "respawn") {
+            // Still under the cap — say so on every attempt. Silence until the park would be a step back
+            // from the old `(spawn FAILED)` line, and this is exactly the state that was invisible before.
+            emit(
+              { type: "recovery_failed", identity: logicalId(s), session: s.name, attempt: failDecision.tags.consecutiveFastFails, cap: limit, ts: isoString(now) },
+              `[convoy-up] recovery FAILED ${logicalId(s)} session=${s.name} — could not relaunch from its manifest (attempt ${failDecision.tags.consecutiveFastFails}/${limit})`,
+            );
+          } else {
+            results.flapping++;
+            const e = failDecision.event;
+            emit(
+              { session: s.name, type: "session_flapping", ts: isoString(e.ts), counter: e.counter, limit: e.limit, window: e.window, reason: "replay_failed" },
+              `[convoy-up] flapping ${logicalId(s)} session=${s.name} — parked after ${e.counter} FAILED recovery attempt(s) (cap ${e.limit}). Its manifest could not be launched. \`pty tag ${s.name} --rm strategy.status\` to retry.`,
+            );
+            if (s.tags["ptyfile.session"] !== "ding") {
+              const id = busIdOf(s) ?? logicalId(s);
+              const body = `Agent ${id} GAVE UP — convoy could not RELAUNCH it after ${e.counter} attempt(s) on network ${root}. Its session is dead and its manifest (.convoy/pty.toml) failed to spawn. NEEDS ATTENTION: this is not a crash loop, it is a broken launch spec. Inspect the manifest, fix it, then clear strategy.status to retry.`;
+              for (const t of dingTargets(s, sessions)) await sendDing(root, t, `recovery failed: ${id}`, body);
+            }
+          }
+          continue;
+        }
+
         state.set(key, decision.tags);
-        const ok = await host.respawn(s); // pty restart -y — preserves the real command (strips tags)
-        if (ok) results.spawned++;
-        else results.failed++;
+        results.spawned++;
         // Re-assert permanence + the counter AFTER the restart (it strips runtime tags) — for pty's
         // display + so a fresh host still recognizes this session. convoy's own store is authoritative. Also
         // re-assert the crash-ding targeting tags (convoy.tier/convoy.spawner) from the pre-respawn session, so
@@ -356,9 +509,10 @@ export async function up(opts: UpOptions): Promise<number> {
           ...(s.tags["convoy.tier"] ? { "convoy.tier": s.tags["convoy.tier"] } : {}),
           ...(s.tags["convoy.spawner"] ? { "convoy.spawner": s.tags["convoy.spawner"] } : {}),
         });
+        // Reached only on a SUCCESSFUL recovery — a failed attempt takes the cap path above and `continue`s.
         emit(
-          { type: "respawn", identity: logicalId(s), session: s.name, reason: "exited", attempt: decision.tags.consecutiveFastFails, cap: limit, ok, ts: isoString(now) },
-          `[convoy-up] respawn ${logicalId(s)} session=${s.name} reason=exited attempt=${decision.tags.consecutiveFastFails}/${limit}${ok ? "" : " (spawn FAILED)"}`,
+          { type: "respawn", identity: logicalId(s), session: s.name, reason: "exited", attempt: decision.tags.consecutiveFastFails, cap: limit, ok: true, ts: isoString(now) },
+          `[convoy-up] respawn ${logicalId(s)} session=${s.name} reason=exited attempt=${decision.tags.consecutiveFastFails}/${limit}`,
         );
         // Ding the orchestrators on a fast-fail CRASH (consecutiveFastFails ≥ 1) — the agent died fast + is being
         // respawned; gate OUT routine respawns (counter 0 = a normal/slow exit, not a crash) as noise. A ding

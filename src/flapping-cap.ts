@@ -115,6 +115,42 @@ export type Decision =
   | { kind: "respawn"; tags: StrategyTags }
   | { kind: "flap"; tags: StrategyTags; event: FlappingEvent };
 
+/**
+ * Classify a recovery ATTEMPT THAT NEVER PRODUCED A LEAF — the spawn itself failed (convoy#82).
+ *
+ * `classify` below infers a fast fail from the leaf's own exit record: `exitedAt - lastRespawnAt < window`.
+ * That inference is structurally BLIND when the spawn never happened, and the blindness is not theoretical
+ * — it is what the convoy#82 reproduction actually showed. With respawn failing every tick, no NEW exit
+ * record was ever written, so `exitedAt` stayed pinned at the original death, which is EARLIER than
+ * `lastRespawnAt`; the interval went negative, `wasFastFail` stayed false, and the counter sat at `0/3`
+ * across unbounded reconcile cycles. The cap never engaged, the agent never parked, and — because the
+ * fast-fail ding gates on `consecutiveFastFails >= 1` — no one was ever told. A silent infinite retry.
+ *
+ * So a failed ATTEMPT is counted directly, on the attempt itself rather than on a leaf that does not
+ * exist. An agent whose manifest cannot spawn at all now parks under the SAME cap as one that spawns and
+ * dies fast, which is the honest reading: both are "convoy tried, convoy could not keep it up."
+ * Deliberately reuses the existing cap rather than adding a second give-up mechanism — one counter, one
+ * threshold, one operator gesture (`--rm strategy.status`) to clear either.
+ */
+export function classifyFailedAttempt(input: {
+  session: string;
+  tags: StrategyTags;
+  currentHash: string;
+  window: number;
+  limit: number;
+  now: Date;
+}): Exclude<Decision, { kind: "skip" }> {
+  // Never `skip`: a failed attempt always either retries or parks — the caller relies on that to
+  // unconditionally persist the updated counter, which is what makes the cap actually advance.
+  const { session, tags, currentHash, window, limit, now } = input;
+  const nextCounter = tags.consecutiveFastFails + 1;
+  if (nextCounter >= limit) {
+    const flapped: StrategyTags = { ...tags, status: FLAPPING_STATUS, consecutiveFastFails: nextCounter, commandHash: currentHash };
+    return { kind: "flap", tags: flapped, event: { session, type: "session_flapping", ts: now, counter: nextCounter, limit, window } };
+  }
+  return { kind: "respawn", tags: { ...tags, lastRespawnAt: now, consecutiveFastFails: nextCounter, commandHash: currentHash, status: null } };
+}
+
 /** Classify one permanent-and-gone session (spec §5.3). Pure: same inputs → same decision. */
 export function classify(input: {
   session: string;
