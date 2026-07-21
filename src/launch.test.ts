@@ -82,6 +82,7 @@ describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
     harness: "claude",
     role: "worker",
     identity: "convoy-claude",
+    supervisor: null,
     transport: "ding",
     networkRoot: null,
     personaOverride: null,
@@ -387,6 +388,7 @@ describe("writeContextFiles — clean-worktree wiring (convoy must not dirty a r
       harness: "claude",
       role: "worker",
       identity: "wk-1",
+      supervisor: null,
       transport: "ding",
       networkRoot: null,
       personaOverride: personaPath,
@@ -504,6 +506,7 @@ describe("convoy add clean-worktree — pty.toml + settings + context, EVERY aut
       harness: "claude",
       role: "worker",
       identity: "wk-1",
+      supervisor: null,
       transport: "ding",
       networkRoot,
       personaOverride: personaPath,
@@ -575,6 +578,41 @@ describe("convoy add clean-worktree — pty.toml + settings + context, EVERY aut
     } finally {
       if (savedSt === undefined) delete process.env["SMALLTALK_DIR"];
       else process.env["SMALLTALK_DIR"] = savedSt;
+      for (const d of [repo, stub, personaDir, netRoot]) rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("stamps convoy.spawner from the DECLARED supervisor, over the launching ST_AGENT (the crash-ding fix)", () => {
+    const savedSt = process.env["SMALLTALK_DIR"];
+    const savedAgent = process.env["ST_AGENT"];
+    const repo = mkdtempSync(join(tmpdir(), "convoy-spawner-"));
+    const stub = mkdtempSync(join(tmpdir(), "convoy-st-stub2-"));
+    const personaDir = mkdtempSync(join(tmpdir(), "convoy-persona2-"));
+    const netRoot = mkdtempSync(join(tmpdir(), "convoy-net2-"));
+    try {
+      mkdirSync(join(stub, "examples", "claude-code", "hooks"), { recursive: true });
+      writeFileSync(join(stub, "examples", "claude-code", "hooks", "session-start.sh"), "#!/bin/sh\n");
+      process.env["SMALLTALK_DIR"] = stub;
+      const persona = join(personaDir, "worker.md");
+      writeFileSync(persona, "# worker persona\n");
+      mkdirSync(join(repo, ".git", "info"), { recursive: true }); // pose as a git repo (no git binary needed)
+
+      // DECLARATIVE flow: `convoy up` (the host) does the launch, so ST_AGENT is the HOST — the declared
+      // supervisor must WIN, else a worker's crash never pages its actual parent (the regression).
+      process.env["ST_AGENT"] = "hetz.convoy-up-host";
+      writeAgentFiles(repo, { ...spec(repo, persona, netRoot), supervisor: "silber.cd-sup" });
+      const toml = readFileSync(join(repo, ".convoy", "pty.toml"), "utf8");
+      expect(toml).toContain('"convoy.spawner" = "silber.cd-sup"'); // the declared parent, NOT the host
+      expect(toml).not.toContain("convoy-up-host");
+
+      // IMPERATIVE `convoy run` (no declared supervisor) → falls back to the launching ST_AGENT (the runner).
+      writeAgentFiles(repo, { ...spec(repo, persona, netRoot), supervisor: null });
+      expect(readFileSync(join(repo, ".convoy", "pty.toml"), "utf8")).toContain('"convoy.spawner" = "hetz.convoy-up-host"');
+    } finally {
+      if (savedSt === undefined) delete process.env["SMALLTALK_DIR"];
+      else process.env["SMALLTALK_DIR"] = savedSt;
+      if (savedAgent === undefined) delete process.env["ST_AGENT"];
+      else process.env["ST_AGENT"] = savedAgent;
       for (const d of [repo, stub, personaDir, netRoot]) rmSync(d, { recursive: true, force: true });
     }
   });

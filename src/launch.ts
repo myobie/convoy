@@ -385,9 +385,13 @@ export function writeContextFiles(dir: string, spec: AgentSpec): void {
 export function writeAgentFiles(dir: string, spec: AgentSpec): void {
   writeContextFiles(dir, spec);
   writeHooks(dir);
-  // The spawner = whoever ran `convoy add` (their bus id, from ST_AGENT) — stamped so a crash-ding reaches
-  // this agent's actual supervisor, not the whole permanent crew. Null when a human spawns it (→ cos-only ding).
-  writePtyToml(dir, spec, { spawner: process.env["ST_AGENT"] ?? null });
+  // The spawner = the agent's DECLARED supervisor (from its agent file), else whoever launched it (their bus
+  // id, from ST_AGENT) — stamped as `convoy.spawner` so a crash-ding reaches this agent's actual supervisor,
+  // not the whole permanent crew. The declared supervisor is authoritative: in the DECLARATIVE flow `convoy
+  // up` (the host) does the launch, so ST_AGENT is the HOST, not the parent — falling back to it there is
+  // exactly what dropped the supervisor-ding (a worker crash then only reached the CoS backstop). ST_AGENT
+  // stays the fallback for the imperative `convoy run` path (no declared supervisor). Null → cos-only ding.
+  writePtyToml(dir, spec, { spawner: spec.supervisor ?? process.env["ST_AGENT"] ?? null });
 }
 
 /**

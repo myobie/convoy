@@ -24,6 +24,7 @@ function spec(over: Partial<AgentSpec> = {}): AgentSpec {
     harness: "claude",
     role: "worker",
     identity: "a",
+    supervisor: null,
     transport: "ding",
     networkRoot: null,
     personaOverride: null,

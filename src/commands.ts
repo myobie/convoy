@@ -893,6 +893,7 @@ export async function cmdCos(args: string[]): Promise<number> {
     harness: "claude",
     role: "chief-of-staff",
     identity,
+    supervisor: null, // the CoS is the root of the supervision tree — it reports to no one
     transport,
     networkRoot: resolveNetworkRoot(optValue(args, "--network")),
     personaOverride: optValue(args, "--persona"),
@@ -989,6 +990,7 @@ export async function cmdRun(args: string[]): Promise<number> {
     harness: harnessRaw,
     role,
     identity,
+    supervisor: null, // ad-hoc: no declared supervisor — writeAgentFiles falls back to the runner's ST_AGENT
     transport,
     networkRoot: network,
     // An ad-hoc session declares no extra environment — it is the runnable core, so it takes the network

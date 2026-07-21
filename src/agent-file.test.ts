@@ -113,6 +113,14 @@ describe("agentFileToSpec — compile intent → AgentSpec", () => {
     expect(agentFileToSpec({ ...base, model: "claude-fable-5" }, { networkRoot: "/net" }).model).toBe("claude-fable-5");
     expect(agentFileToSpec(base, { networkRoot: "/net" }).model).toBe(null);
   });
+
+  it("threads supervisor → spec.supervisor so a crash-ding reaches the parent (dropping it was the regression)", () => {
+    // The declarative flow (convoy up launches from the catalog) must carry the declared supervisor through
+    // to the spec — it becomes the session's convoy.spawner tag, which crashDingTargets pages on a crash.
+    expect(agentFileToSpec({ ...base, supervisor: "silber.cd-sup" }, { networkRoot: "/net" }).supervisor).toBe("silber.cd-sup");
+    // no supervisor declared → null (launch then falls back to the launching ST_AGENT).
+    expect(agentFileToSpec(base, { networkRoot: "/net" }).supervisor).toBeNull();
+  });
 });
 
 describe("agentFileToToml — serialize (what convoy add authors)", () => {

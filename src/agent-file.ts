@@ -312,6 +312,10 @@ export function agentFileToSpec(af: AgentFile, opts: { networkRoot: string | nul
     harness: af.harness ?? "claude",
     role: af.role,
     identity: af.identity,
+    // Carry the declared supervisor through to the spec so the launch path can stamp it as `convoy.spawner`
+    // (a worker crash pages its actual supervisor, not just the CoS). Dropping it here was the crash-ding
+    // regression: the declarative launch fell back to the HOST's ST_AGENT instead of the declared parent.
+    supervisor: af.supervisor ?? null,
     transport: af.transport ?? "ding",
     networkRoot: opts.networkRoot,
     personaOverride: af.persona ?? null,

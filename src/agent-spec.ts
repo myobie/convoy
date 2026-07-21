@@ -20,6 +20,12 @@ export interface AgentSpec {
   harness: Harness;
   role: Role;
   identity: string;
+  /** The bus id of this agent's SUPERVISOR (whoever it reports to / escalates a crash to). Comes from the
+   *  agent file's `supervisor` in the declarative flow, or falls back to the launching ST_AGENT in the
+   *  imperative (`convoy run`) flow. Stamped as the `convoy.spawner` session tag so `convoy up`'s crash-ding
+   *  reaches the actual parent (crashDingTargets), not just the CoS backstop. null = no declared supervisor
+   *  (a crash then dings the CoS only). */
+  supervisor: string | null;
   transport: Transport;
   networkRoot: string | null;
   personaOverride: string | null;
