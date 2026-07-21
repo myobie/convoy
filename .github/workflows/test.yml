@@ -1,0 +1,74 @@
+# convoy's vitest gate. The Nix flake check (nix.yml) builds the binary and runs the help / completions /
+# typecheck checks + the completions-PARITY test — but NOT the full vitest suite. Most of that suite shells
+# out to `git worktree` (and spawns the real `bin/convoy`), which is awkward in the hermetic nix sandbox, so
+# it lives OUTSIDE the flake. That left a gap: a red vitest test could still be CI-green. This runs the whole
+# `npm test` on a normal runner so it can't.
+#
+# Modeled on pty's test.yml (#114), adapted for convoy's one real difference: convoy depends on
+# @compoundingtech/pty + @compoundingtech/smalltalk via `file:../<sibling>` paths. buildNpmPackage (nix)
+# links those from flake inputs; here we check the sibling repos out BESIDE convoy and build them (convoy
+# imports their compiled `dist/`), then `npm install` links them through the file: deps.
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  vitest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # convoy + its two file: siblings must be checked out side by side (../pty, ../smalltalk resolve
+      # relative to the convoy checkout), so each goes in its own named path under the workspace.
+      - uses: actions/checkout@v4
+        with:
+          path: convoy
+      - uses: actions/checkout@v4
+        with:
+          repository: compoundingtech/pty
+          path: pty
+      - uses: actions/checkout@v4
+        with:
+          repository: compoundingtech/smalltalk
+          path: smalltalk
+
+      - uses: actions/setup-node@v4
+        with:
+          # convoy needs Node >=23.6 — bin/convoy dynamically imports src/cli.ts and relies on native .ts
+          # type-stripping (the subprocess tests spawn it). Matches the flake's nodejs_24.
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            convoy/package-lock.json
+            pty/package-lock.json
+            smalltalk/package-lock.json
+
+      - name: Install test-only shells (absent on ubuntu-latest)
+        # completions.test.ts validates the GENERATED zsh/fish scripts with the real shells and SKIPS when
+        # they're missing — so without these the zsh syntax check (which is exactly what catches a bad flag
+        # description) silently no-ops. bash ships with the runner.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh fish
+
+      - name: Build the sibling deps (convoy imports their compiled dist/)
+        run: |
+          (cd pty && npm ci && npm run build)
+          (cd smalltalk && npm ci && npm run build)
+
+      - name: Install convoy
+        working-directory: convoy
+        # `npm install`, not `npm ci`: the file: siblings are separate repos whose versions float ahead of
+        # convoy's pinned lockfile, which would make `npm ci` fail on any sibling version bump. install
+        # re-resolves the local links against whatever main is checked out.
+        run: npm install
+
+      - name: Test
+        working-directory: convoy
+        # The cutWorktree tests run `git commit` in throwaway repos, which needs a committer identity.
+        run: |
+          git config --global user.email "ci@convoy.test"
+          git config --global user.name "convoy CI"
+          npm test
