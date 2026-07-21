@@ -49,6 +49,23 @@ describe("network-config (<net>/convoy.toml)", () => {
     expect(readNetworkConfig(d)).toEqual({ name: "x" });
   });
 
+  it("write + read round-trips a network env map; a non-string-map env is dropped whole", () => {
+    const d = tmp();
+    // unset / empty → absent (callers apply no network env).
+    writeNetworkConfig(d, { name: "default" });
+    expect(readNetworkConfig(d)).toEqual({ name: "default" });
+    writeNetworkConfig(d, { name: "default", env: {} });
+    expect(readNetworkConfig(d)).toEqual({ name: "default" });
+
+    // a string→string map round-trips (the fleet-wide knob shape).
+    writeNetworkConfig(d, { name: "ournet", env: { PTY_REAP_ON_EXIT: "false" } });
+    expect(readNetworkConfig(d)).toEqual({ name: "ournet", env: { PTY_REAP_ON_EXIT: "false" } });
+
+    // a non-string value makes the map invalid → the whole env is dropped (never a half-valid launch env).
+    writeFileSync(networkConfigPath(d), 'name = "x"\n[env]\nGOOD = "1"\nBAD = 2\n');
+    expect(readNetworkConfig(d)).toEqual({ name: "x" });
+  });
+
   it("read is null when the file is missing or nameless", () => {
     const d = tmp();
     expect(readNetworkConfig(d)).toBeNull(); // no file yet

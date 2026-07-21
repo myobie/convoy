@@ -25,11 +25,23 @@ export interface NetworkConfig {
   /** The ding sidecar this network runs (see `DingService`). A per-NETWORK choice, not per-agent: the
    *  ding binary is a runtime dependency of the box hosting the net. Unset → "node" (`st ding`). */
   ding?: DingService;
+  /** A network-wide agent env map — merged into EVERY agent's derived session env at render (both the
+   *  harness and the ding session), UNDER the derived wiring so it can never repoint ST_AGENT/ST_ROOT/
+   *  PTY_ROOT; a per-agent `env` still overrides it. This is where a FLEET-WIDE runtime knob lives — e.g.
+   *  `PTY_REAP_ON_EXIT = "false"` to preserve finished sessions network-wide (the pty daemon reads it from
+   *  its own env). Optional; unset → no network env. */
+  env?: Record<string, string>;
 }
 
 /** True iff `v` is a valid `DingService` spelling. */
 export function isDingService(v: unknown): v is DingService {
   return v === "node" || v === "rust";
+}
+
+/** True iff `v` is a flat string→string map — the shape a network env must have (a mis-typed value, e.g.
+ *  a number or nested table, drops the whole env rather than launching agents with a half-valid env). */
+export function isEnvMap(v: unknown): v is Record<string, string> {
+  return typeof v === "object" && v !== null && !Array.isArray(v) && Object.values(v).every((x) => typeof x === "string");
 }
 
 /** The config file location for a network dir: `<dir>/convoy.toml`. */
@@ -51,6 +63,7 @@ export function readNetworkConfig(dir: string): NetworkConfig | null {
       name: doc.name,
       ...(typeof doc.megarepo === "string" && doc.megarepo ? { megarepo: doc.megarepo } : {}),
       ...(isDingService(doc.ding) ? { ding: doc.ding } : {}),
+      ...(isEnvMap(doc.env) && Object.keys(doc.env).length > 0 ? { env: doc.env } : {}),
     };
   } catch {
     return null;
@@ -62,5 +75,6 @@ export function writeNetworkConfig(dir: string, config: NetworkConfig): void {
   const doc: Record<string, unknown> = { name: config.name };
   if (config.megarepo) doc["megarepo"] = config.megarepo;
   if (config.ding) doc["ding"] = config.ding;
+  if (config.env && Object.keys(config.env).length > 0) doc["env"] = config.env;
   writeFileSync(networkConfigPath(dir), tomlStringify(doc));
 }

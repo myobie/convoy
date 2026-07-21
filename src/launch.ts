@@ -186,9 +186,12 @@ export function provisionContext(memberDir: string, identity: string): string | 
 export function writePtyToml(dir: string, spec: AgentSpec, opts?: { spawner?: string | null }): void {
   const busId = busAgentId(spec); // the host-prefixed bus identity, e.g. silber.convoy-claude
   const root = spec.networkRoot; // the network DIR; ST_ROOT is <root>/smalltalk (the bus), PTY_ROOT is <root>/pty
-  // The ding SERVICE is a per-network choice, recorded in <net>/convoy.toml (unset → node `st ding`). Read
-  // it here so the sidecar command baked into the pty.toml is the network's chosen ding (node or rust).
-  const dingService = root ? readNetworkConfig(root)?.ding : undefined;
+  // Per-network config from <net>/convoy.toml (unset fields → defaults): the ding SERVICE (node `st ding`
+  // vs rust `ding`) baked into the sidecar command, and a network-wide agent ENV merged into every session
+  // below — the fleet-wide knob seam (e.g. PTY_REAP_ON_EXIT), applied UNDER the derived wiring.
+  const netCfg = root ? readNetworkConfig(root) : null;
+  const dingService = netCfg?.ding;
+  const networkEnv = netCfg?.env ?? {};
   const harnessId = sessionId(spec); // e.g. silber.convoy (agentShort strips the -claude/-codex suffix)
   const dingId = `${harnessId}.ding`; // e.g. silber.convoy.ding
   const permanent = specPermanent(spec);
@@ -210,11 +213,13 @@ export function writePtyToml(dir: string, spec: AgentSpec, opts?: { spawner?: st
   // from the harness table: CLAUDE_CONFIG_DIR for claude, CODEX_HOME for codex. Before, this was
   // hardcoded to CLAUDE_CONFIG_DIR, so `--config-dir` on a codex session set a variable codex does not
   // read — the flag reported success and selected nothing.
-  // Spec `env` first, derived wiring LAST: ST_AGENT/ST_ROOT/PTY_ROOT are correct-by-construction (AC-1)
-  // and a hand-written env key must never be able to repoint the agent at another bus.
+  // Precedence, lowest first: NETWORK env (fleet default) < spec `env` (per-agent) < derived wiring LAST.
+  // ST_AGENT/ST_ROOT/PTY_ROOT are correct-by-construction (AC-1) and always win — neither a network nor a
+  // hand-written per-agent key can repoint the agent at another bus; per-agent env still overrides a network
+  // default.
   const specEnv = spec.env ?? {};
   const configEnv = harnessDescriptor(spec.harness).configEnv;
-  const harnessEnv = { ...specEnv, ...env, ...(spec.configDir && configEnv ? { [configEnv]: spec.configDir } : {}) };
+  const harnessEnv = { ...networkEnv, ...specEnv, ...env, ...(spec.configDir && configEnv ? { [configEnv]: spec.configDir } : {}) };
   const doc: Record<string, unknown> = {
     prefix: harnessId,
     sessions: {
@@ -230,7 +235,9 @@ export function writePtyToml(dir: string, spec: AgentSpec, opts?: { spawner?: st
               id: dingId,
               command: dingCommand(busId, harnessId, root ? stRootOf(root) : null, dingService),
               tags: { role: "ding", ...(permanent ? { strategy: "permanent" } : {}), ...stTag },
-              env,
+              // The ding daemon reads PTY_REAP_ON_EXIT from its OWN env, so the network env goes on the ding
+              // session too (under the derived wiring) — else a preserved-fleet setting would skip the sidecar.
+              env: { ...networkEnv, ...env },
             },
           }
         : {}),
