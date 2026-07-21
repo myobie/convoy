@@ -153,27 +153,28 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "run",
-    // No `--permanent`: a permanent ad-hoc session is a contradiction — nothing declares it, so nothing
-    // can bring it back. `cmdRun` pins permanentOverride=false so a permanent-by-default role can't
-    // smuggle respawn semantics in either.
-    desc: "Launch an ad-hoc session — not declared, not reconciled, not respawned",
+    // `run` is `add` + launch + attach, so its flag set IS `add`'s (they share `buildDeclaration`), plus
+    // `--no-attach` for non-interactive callers. `--permanent` is here now: a run-created agent is a real
+    // catalog member, so "always-on" is a coherent thing to ask of it. `--prefix` and `--config-dir` are
+    // gone — the declaration carries the host prefix (`--host`) and the harness config dir (via `env`), and
+    // a per-invocation override of either would desync the session from the agent file that describes it.
+    desc: "Declare an agent, launch it, and attach (add + up, in one step)",
     flags: [
       IDENTITY_FLAG,
+      { name: "host", desc: "Owning host (default: this machine)", kind: "value" },
       HARNESS_FLAG,
-      { name: "model", desc: "Per-agent model id", kind: "value" },
+      { name: "model", desc: "Model id passed to the harness", kind: "value" },
       TRANSPORT_FLAG,
       { name: "mcp", desc: "Shorthand for --transport mcp", kind: "bool" },
       NETWORK_FLAG,
-      { name: "dir", desc: "Workspace dir (default: cwd)", kind: "value", takesPath: true },
+      { name: "dir", desc: "Workspace dir", kind: "value", takesPath: true },
+      { name: "bin", desc: "Harness executable (path or command name)", kind: "value", takesPath: true },
+      { name: "supervisor", desc: "Identity this agent reports to", kind: "value" },
       PERSONA_FLAG,
-      { name: "prefix", desc: "Session-id prefix (default: short hostname)", kind: "value" },
-      CONFIG_DIR_FLAG,
-      // `--bin` on the ad-hoc path too: a deployment that wraps its harness wraps it for ad-hoc sessions
-      // as well, and `convoy run` is the replacement for exactly those launcher aliases. Without it, the
-      // ad-hoc path is the one place a convoy session escapes the deployment's boundary.
-      { name: "bin", desc: "Run this in place of the bare harness binary", kind: "value", takesPath: true },
+      { name: "permanent", desc: "Always-on member", kind: "bool" },
+      { name: "no-attach", desc: "Declare and launch, but do not attach", kind: "bool" },
       DRY_RUN_FLAG,
-      { name: "force", desc: "Overwrite a foreign pty.toml in the workspace", kind: "bool" },
+      { name: "force", desc: "Re-declare an existing (stopped) agent with these flags", kind: "bool" },
     ],
     positional: { desc: "Role (default: worker)", values: ROLE_SPELLINGS },
   },

@@ -7,14 +7,15 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { homedir, hostname } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { run } from "./exec.ts";
+import { execInteractive, run } from "./exec.ts";
 import { flagAllowList } from "./command-table.ts";
 import { CONVOY_DIR, DEFAULT_NETWORK_NAME, defaultConvoyNetwork, isNetworkName, networkDirForName, networkDirOfStRoot, networkLayout, stRootOf } from "./paths.ts";
 import { DING_SERVICES, isDingService, networkNameFromDir, readNetworkConfig, writeNetworkConfig, type DingService } from "./network-config.ts";
 import { defaultBinDir, installClis } from "./install-cli.ts";
 import { Bus, isLive, type Agent } from "./bus.ts";
-import { PtyHost, spawnFromPtyFile, workspaceOfPtyfile, type SupervisedSession } from "./host.ts";
+import { PtyHost, gone, processAlive, spawnFromPtyFile, workspaceOfPtyfile, type SupervisedSession } from "./host.ts";
 import { busIdOf } from "./up.ts";
+import { agentBusId } from "./reconcile.ts";
 import { discoverSmalltalkDir, nativeLaunch, regenerateDingRoot, writeAgentFiles } from "./launch.ts";
 import { agentFilePath, agentFileToSpec, agentFileToToml, catalogDir, isValidBin, readAgentFile, writeAgentFile, SAMPLE_AGENT_TOML, type AgentFile } from "./agent-file.ts";
 import { readCatalog } from "./catalog.ts";
@@ -29,8 +30,8 @@ import { runFullOrgSuite, runReadinessSuite } from "./doctor/suite.ts";
 import { structureChecks } from "./doctor/structure.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
-import { adHocNotice, generateAdHocIdentity, validateRunIdentity } from "./run.ts";
-import { busAgentId, isValidModel, preflight, resolvedPersonaPath, shortHostname, type AgentSpec, type Transport } from "./agent-spec.ts";
+import { declaredRunNotice, liveForceRefusal, passedDeclarationFlags, resolveRunAction, staleFlagsNote } from "./run.ts";
+import { busAgentId, isValidModel, preflight, resolvedPersonaPath, sessionId, shortHostname, type AgentSpec, type Transport } from "./agent-spec.ts";
 import { HARNESSES, HARNESS_SESSION_KEYS, HARNESS_SUFFIX_RE, harnessDescriptor, harnessesInPtyToml, harnessLimitations, isHarness, type Harness } from "./harness.ts";
 import { claudeConfigPath, codexConfigPath, pretrustDirs, pretrustDirsCodex } from "./trust.ts";
 import { DEFAULT_JOB_ID, completionPath, isValidJobId, readCompletion, writeCompletion, type JobStatus } from "./job.ts";
@@ -700,15 +701,27 @@ export async function cutWorktree(megarepo: string, path: string, identity: stri
   return { ok: true, branch };
 }
 
-export async function cmdAdd(args: string[]): Promise<number> {
-  const bad = unknownFlag(args, ...flagAllowList("add"));
-  if (bad) {
-    err(`unrecognized flag "${bad}" for \`convoy add\` — refusing rather than silently ignoring it. See \`convoy add --help\`.`);
-    return 2;
-  }
+/** A built-but-NOT-yet-written declaration, plus the context the callers need to report it. */
+interface Declaration {
+  readonly af: AgentFile;
+  readonly path: string;
+  readonly existed: boolean;
+  readonly network: string;
+  /** True when the workspace came from an explicit --dir (vs. the derived megarepo worktree path). */
+  readonly dirGiven: boolean;
+  readonly megarepo: string | null;
+}
+
+/** Build + validate the declaration for `convoy add` and `convoy run` from the SAME flags.
+ *
+ *  Extracted so the two verbs cannot drift: `run` is `add` plus a launch and an attach, and the only honest
+ *  way to promise that is for both to compile their agent file through one function. Writes NOTHING — the
+ *  caller decides whether and when to persist it (add gates on --force; run's decision table is richer).
+ *  Returns a numeric exit code on failure, having already reported the error. */
+async function buildDeclaration(args: string[], verb: "add" | "run"): Promise<Declaration | number> {
   const roleRaw = positionals(args)[0];
   if (!roleRaw) {
-    err("missing role. Usage: convoy add <role> --identity <id>");
+    err(`missing role. Usage: convoy ${verb} <role> --identity <id>`);
     return 2;
   }
   const role = parseRole(roleRaw);
@@ -716,9 +729,17 @@ export async function cmdAdd(args: string[]): Promise<number> {
     err(`unknown role "${roleRaw}". Valid: ${ROLES.join(", ")}`);
     return 2;
   }
+  // --identity is REQUIRED for `run`, exactly as for `add`. #92 generated one (`run-b3ur0v`) when it was
+  // omitted; that is precisely the hashed-name problem that makes durable context unreachable — nobody
+  // re-derives a random name on the next cold boot, so the agent can never find its own context/ again.
+  // A meaningful name is the cheapest thing a caller can supply and the one thing continuity depends on.
   const identity = optValue(args, "--identity");
   if (!identity) {
-    err("--identity is required");
+    err(
+      verb === "run"
+        ? "--identity is required. `convoy run` DECLARES the agent, and a declared agent needs a name you can re-derive — that is what lets its context/ survive a restart. Pick something meaningful: `convoy run worker --identity fodfix`."
+        : "--identity is required",
+    );
     return 2;
   }
   const harnessRaw = (optValue(args, "--harness") ?? "claude").toLowerCase();
@@ -743,37 +764,40 @@ export async function cmdAdd(args: string[]): Promise<number> {
   }
   const network = resolveNetworkRoot(optValue(args, "--network"));
 
-  // VALIDATE THE IDENTITY HERE — `add` is the DECLARE path, and it used to check only truthiness, so a
+  // VALIDATE THE IDENTITY HERE — this is the DECLARE path, and it used to check only truthiness, so a
   // name the bus rejects (`worker_fodfix`) was written into the SYNCED catalog and propagated to every
   // peer machine before anything noticed. Validating at launch is too late by several machines. The
   // network is resolved above, so the check gets its real context: the bus grammar, the socket budget
   // for THIS network's path, and the identities already declared on it.
   const addHost = (optValue(args, "--host") ?? shortHostname()).toLowerCase();
-  const declared = readCatalog(network).entries.map((e) => e.af.identity);
+  const declaredIds = readCatalog(network).entries.map((e) => e.af.identity);
   const idErrors = identityErrors(identity, {
     ptyRoot: networkLayout(network).ptyRoot,
     prefix: addHost,
-    // A re-declare of the SAME name is an overwrite, gated by --force below, not a uniqueness failure.
-    existing: declared.filter((d) => d !== identity),
+    // A re-declare of the SAME name is an overwrite (add: gated by --force; run: the resume path), not a
+    // uniqueness failure.
+    existing: declaredIds.filter((d) => d !== identity),
   });
   if (idErrors.length > 0) {
     for (const e of idErrors) err(e);
     return 2;
   }
 
-  // DECLARE-ONLY (Nathan's piece-2 call): `convoy add` writes the agent file (declarative intent) into the
-  // SYNCED catalog and does NOTHING else — no render, no launch, no bus folder, no pretrust, no persona-clone,
-  // no worktree cut. The catalog is desired state; `convoy up` renders-if-needed + launches this host's agents
-  // on the way (piece 3), and `convoy render <id>` materializes the overlay standalone. Declaring != running.
+  const path = agentFilePath(catalogDir(network), identity);
+  const existed = existsSync(path);
+
+  // workspace: --dir <abs path> wins; else, with a megarepo configured, the intended per-agent worktree
+  // path <net>/worktrees/<id> (materialized at launch — reuses #59). No --dir + no megarepo → no workspace
+  // (agents need one) → refuse with a clear fix.
   //
-  // workspace (accepts both forms Nathan signed off): --dir <abs path> wins; else, with a megarepo configured,
-  // the intended per-agent worktree path <net>/worktrees/<id> (materialize cuts it off the megarepo — reuses
-  // #59, at materialize-time now that add is declare-only). No --dir + no megarepo → no workspace (agents need
-  // one) → refuse with a clear fix.
+  // EXCEPT when `run` is resuming an agent that is ALREADY declared: the existing agent file already carries
+  // its workspace, and demanding `--dir` again would make the resume path — the everyday path, the one this
+  // whole design exists to deliver — impossible to invoke without repeating what the catalog already knows.
+  // `add` keeps the hard requirement: it only ever authors a declaration, so it has nothing to fall back on.
   const dir = optValue(args, "--dir");
   const cfg = readNetworkConfig(network);
   const workspace = dir ? resolve(expandTilde(dir)) : cfg?.megarepo ? join(networkLayout(network).worktrees, identity) : null;
-  if (!workspace) {
+  if (!workspace && !(verb === "run" && existed)) {
     err(`no workspace for "${identity}": pass --dir <repo>, or configure a megarepo (\`convoy init --megarepo <path>\`) so a worktree is cut for it at launch.`);
     return 1;
   }
@@ -784,7 +808,7 @@ export async function cmdAdd(args: string[]): Promise<number> {
     identity,
     role,
     host: addHost,
-    workspace,
+    ...(workspace ? { workspace } : {}),
     harness: harnessRaw as Harness,
     transport,
     ...(supervisor ? { supervisor } : {}),
@@ -794,8 +818,25 @@ export async function cmdAdd(args: string[]): Promise<number> {
     ...(hasFlag(args, "--permanent") ? { strategy: "permanent" as const } : {}),
   };
 
-  const path = agentFilePath(catalogDir(network), identity);
-  const existed = existsSync(path);
+  return { af, path, existed, network, dirGiven: dir !== null, megarepo: cfg?.megarepo ?? null };
+}
+
+export async function cmdAdd(args: string[]): Promise<number> {
+  const bad = unknownFlag(args, ...flagAllowList("add"));
+  if (bad) {
+    err(`unrecognized flag "${bad}" for \`convoy add\` — refusing rather than silently ignoring it. See \`convoy add --help\`.`);
+    return 2;
+  }
+  const built = await buildDeclaration(args, "add");
+  if (typeof built === "number") return built;
+  const { af, path, existed, dirGiven, megarepo } = built;
+  const identity = af.identity;
+
+  // DECLARE-ONLY: `convoy add` writes the agent file (declarative intent) into the SYNCED catalog and does
+  // NOTHING else — no render, no launch, no bus folder, no pretrust, no persona-clone, no worktree cut. The
+  // catalog is desired state; `convoy up` renders-if-needed + launches this host's agents, `convoy render
+  // <id>` materializes the overlay standalone, and `convoy run` is this same declaration plus a launch and
+  // an attach. Declaring != running.
   if (existed && !hasFlag(args, "--force")) {
     err(`agent "${identity}" is already declared at ${path}. The catalog SYNCS across machines — overwriting could disrupt a running agent. Re-run with --force to replace it.`);
     return 1;
@@ -807,9 +848,9 @@ export async function cmdAdd(args: string[]): Promise<number> {
     return 0;
   }
   writeAgentFile(path, af);
-  out(`✓ declared "${identity}" (${role}, host ${af.host})${existed ? " — REPLACED" : ""} → ${path}`);
-  out(`  workspace: ${workspace}${!dir && cfg?.megarepo ? ` (a worktree off megarepo ${cfg.megarepo}, cut at launch)` : ""}`);
-  out(`  NOTHING launched — the catalog is desired state. Run \`convoy up\` to reconcile + launch this host's agents (or \`convoy render ${identity}\` to materialize the overlay now).`);
+  out(`✓ declared "${identity}" (${af.role}, host ${af.host})${existed ? " — REPLACED" : ""} → ${path}`);
+  out(`  workspace: ${af.workspace}${!dirGiven && megarepo ? ` (a worktree off megarepo ${megarepo}, cut at launch)` : ""}`);
+  out(`  NOTHING launched — the catalog is desired state. Run \`convoy up\` to reconcile + launch this host's agents (or \`convoy render ${identity}\` to materialize the overlay now), or \`convoy run\` to declare+launch+attach in one step.`);
   return 0;
 }
 
@@ -909,16 +950,19 @@ export async function cmdCos(args: string[]): Promise<number> {
   return rc;
 }
 
-/** `convoy run` — launch an AD-HOC session: the runnable core with NO declaration on top.
+/** `convoy run [role] --identity <id>` — DECLARE, launch, and attach.
  *
- *  Structurally this is `cmdCos`'s shape (build an AgentSpec, hand it to launchSpec) generalized past the
- *  hardcoded chief-of-staff, and it writes NO catalog entry for the same reason `cmdCos` doesn't. The
- *  difference from every other launch is what it REFUSES to promise; see run.ts for the full contract
- *  delta and why an "ephemeral declaration" was rejected.
+ *  `run` is `convoy add` plus a launch and an attach: the same flags, the same validation, the same catalog
+ *  write (they share `buildDeclaration`, so they cannot drift), and then it starts the agent and hands the
+ *  caller the terminal. This SUPERSEDES the ad-hoc session that shipped in #92 — see the header of run.ts
+ *  for why the declared model is right and why #92's three objections do not survive.
  *
- *  `--permanent` is deliberately absent from the flag table: a permanent ad-hoc session is a contradiction
- *  (nothing declares it, so nothing can bring it back), and `permanentOverride` is pinned false below so a
- *  role whose default is permanent cannot smuggle respawn semantics in. */
+ *  Everything an agent needs to converge — a stable identity, a durable `context/`, reconcile and respawn
+ *  under `convoy up` — follows from being DECLARED. So `run` declares, and there is no longer a second class
+ *  of session for the codebase (or the operator) to keep track of.
+ *
+ *  `--permanent` is now accepted, unlike in #92: a run-created agent is a real catalog member, so "always-on"
+ *  is a coherent thing to ask for and `strategy = "permanent"` is the legal value that expresses it. */
 export async function cmdRun(args: string[]): Promise<number> {
   const bad = unknownFlag(args, ...flagAllowList("run"));
   if (bad) {
@@ -926,91 +970,95 @@ export async function cmdRun(args: string[]): Promise<number> {
     return 2;
   }
 
-  // Role defaults to `worker`: an ad-hoc session is a hands-on one-off, and worker is the least-privileged
-  // role that still gets a persona. Spawner roles are permitted but are a poor fit — nothing it spawns is
-  // declared either, and the children outlive the ad-hoc parent that has no supervisor to escalate to.
-  const roleRaw = positionals(args)[0] ?? "worker";
-  const role = parseRole(roleRaw);
-  if (!role) {
-    err(`unknown role "${roleRaw}". Valid: ${ROLES.join(", ")}`);
-    return 2;
-  }
+  // Role defaults to `worker` (kept from #92): the least-privileged role that still gets a persona, and by
+  // far the most common thing started by hand. `buildDeclaration` reads the role as a positional, so supply
+  // the default by prepending it rather than by teaching the shared builder a run-only special case.
+  const withRole = positionals(args).length > 0 ? args : ["worker", ...args];
 
-  const harnessRaw = (optValue(args, "--harness") ?? "claude").toLowerCase();
-  if (!isHarness(harnessRaw)) {
-    err(`unknown harness "${harnessRaw}". Valid: ${HARNESSES.join(", ")}`);
-    return 2;
-  }
-  const transport = resolveTransport(args);
-  if (!transport) {
-    err(`unknown transport. Valid: ding, mcp`);
-    return 2;
-  }
-  const model = optValue(args, "--model");
-  if (model !== null && !isValidModel(model)) {
-    err(`invalid --model "${model}" — use letters, digits, and . _ : / - (start alphanumeric), e.g. claude-fable-5`);
-    return 2;
-  }
-
-  const network = resolveNetworkRoot(optValue(args, "--network"));
-
-  // An explicit --identity is validated against the DECLARED catalog, not just the live bus: colliding with
-  // a declared agent that happens to be down right now would still point this session at that agent's
-  // durable context. Generated identities skip the check — they cannot collide by construction.
-  const explicit = optValue(args, "--identity");
-  let identity: string;
-  if (explicit !== null) {
-    const declared = readCatalog(network).entries.map((e) => e.af.identity);
-    const problem = validateRunIdentity(explicit, declared);
-    if (problem) {
-      err(problem);
-      return 2;
-    }
-    identity = explicit;
-  } else {
-    identity = generateAdHocIdentity();
-  }
-
-  // Workspace: --dir, else the CURRENT directory. Unlike `convoy add`, a missing workspace is NOT an error
-  // and no worktree is cut off the megarepo — an ad-hoc session is normally "a harness, here, now", which
-  // is exactly what the launcher aliases it replaces did. Cutting a worktree would leave durable
-  // filesystem residue behind a session that promises no durability.
-  const dir = optValue(args, "--dir");
-  const workingDir = dir ? resolve(expandTilde(dir)) : process.cwd();
-
-  const runBin = optValue(args, "--bin");
-  if (runBin !== null && !isValidBin(runBin)) {
-    err(`invalid --bin "${runBin}" — it is interpolated into the launch command, so it must be a plain path or command name (letters, digits, and . _ / - ), with no spaces, quotes, or shell metacharacters`);
-    return 2;
-  }
-
+  const built = await buildDeclaration(withRole, "run");
+  if (typeof built === "number") return built;
+  const { af, path, existed, network } = built;
+  const identity = af.identity;
+  const force = hasFlag(args, "--force");
   const dryRun = hasFlag(args, "--dry-run");
-  const spec: AgentSpec = {
-    harness: harnessRaw,
-    role,
-    identity,
-    transport,
-    networkRoot: network,
-    // An ad-hoc session declares no extra environment — it is the runnable core, so it takes the network
-    // as-is. `--bin` IS honored: a deployment that wraps its harness (credential selection, persona
-    // projection, policy gates) wraps it for ad-hoc sessions too, and this path replaces the launcher
-    // aliases that were themselves those wrappers.
-    bin: runBin,
-    env: {},
-    personaOverride: optValue(args, "--persona"),
-    workingDir,
-    permanentOverride: false, // never respawned — see the doc comment above
-    prefix: optValue(args, "--prefix"),
-    configDir: optValue(args, "--config-dir"),
-    model,
-  };
 
-  out(`convoy run — ${identity} (${harnessRaw}, ${role})`);
-  out(`workspace: ${workingDir}`);
-  out(adHocNotice(identity, busAgentId(spec), role));
+  // ACTUAL state, keyed EXACTLY as `convoy up`'s reconcile keys it (reconcile.ts `agentBusId` + up.ts
+  // `busIdOf`), so `run` and `up` can never disagree about what "already running" means. The gone-but-pid-
+  // alive tolerance is reconcile's too: pty can transiently report `gone` under load, and treating that as
+  // dead would relaunch a live agent.
+  const busId = agentBusId(af, shortHostname());
+  const live = (await new PtyHost(network).sessions()).filter(
+    (s) => busIdOf(s) === busId && (!gone(s) || processAlive(s.pid)),
+  );
+
+  const action = resolveRunAction({ declared: existed, live: live.length > 0, force });
+  if (action === "refuse-live-force") {
+    err(liveForceRefusal(identity));
+    return 1;
+  }
+
+  // On resume/attach the EXISTING declaration is authoritative — the catalog is the source of truth once it
+  // exists, and silently re-declaring from this invocation's flags would let a stray `--model` mutate a
+  // synced, fleet-visible agent file as a side effect of attaching to it.
+  const reuseExisting = action === "resume" || action === "attach";
+  let effective = af;
+  if (reuseExisting) {
+    try {
+      effective = readAgentFile(path);
+    } catch (e) {
+      err(`agent "${identity}" is declared at ${path} but its agent file could not be read: ${e instanceof Error ? e.message : String(e)}`);
+      return 1;
+    }
+    const note = staleFlagsNote(identity, passedDeclarationFlags(args));
+    if (note) out(note);
+  }
+
+  const spec = agentFileToSpec(effective, { networkRoot: network });
+  const ref = sessionId(spec);
+  const attach = !hasFlag(args, "--no-attach");
+
+  out(`convoy run — ${identity} (${effective.harness ?? "claude"}, ${effective.role})`);
+  out(`workspace: ${effective.workspace ?? "(none)"}`);
+
+  if (action === "attach") {
+    out(`  already running (${live.map((s) => s.name).join(", ")}) — attaching, NOT restarting it.`);
+    if (dryRun) {
+      out(`✓ Dry run only. Re-run without --dry-run to attach to ${ref}.`);
+      return 0;
+    }
+    if (!attach) {
+      out(`✓ ${identity} is running. \`pty attach ${ref}\` to join it.`);
+      return 0;
+    }
+    return execInteractive("pty", ["attach", ref]);
+  }
+
+  // declare / redeclare → persist the declaration. `resume` deliberately writes NOTHING.
+  if (action === "declare" || action === "redeclare") {
+    if (dryRun) {
+      out(`convoy run — DRY RUN: would ${existed ? "OVERWRITE" : "write"} the agent file ${path}:\n`);
+      out(agentFileToToml(af));
+      out(`✓ Dry run only. Re-run without --dry-run to declare, launch, and attach ${identity}.`);
+      return 0;
+    }
+    writeAgentFile(path, af);
+    out(`✓ declared "${identity}" (${af.role}, host ${af.host})${action === "redeclare" ? " — REPLACED" : ""} → ${path}`);
+  } else {
+    out(`  resuming the declared agent — its context/ and bus folder are picked back up where they were.`);
+    if (dryRun) {
+      out(`✓ Dry run only. Re-run without --dry-run to launch and attach ${identity}.`);
+      return 0;
+    }
+  }
+
+  const rc = await launchSpec(spec, { dryRun: false, force });
+  if (rc !== 0) return rc;
+
   out();
-
-  return launchSpec(spec, { dryRun, force: hasFlag(args, "--force") });
+  out(declaredRunNotice(identity, busAgentId(spec), ref));
+  out();
+  if (!attach) return 0;
+  return execInteractive("pty", ["attach", ref]);
 }
 
 // ---- `convoy ls --tree`: spawn-parentage tree (cos → supervisor → worker) + a remote section ----

@@ -1,109 +1,126 @@
-// `convoy run` — an AD-HOC session: the runnable core WITHOUT the declaration on top.
+// `convoy run` — DECLARE, launch, and attach. The interactive front door to the SAME declared model
+// every other verb speaks.
 //
-// The agent spec's own layering is the justification: "`pty` is the runnable core; the agent fields are
-// the superset — a `pty` block alone still runs; convoy just layers intent on top." An ad-hoc session is
-// that lower layer. It is deliberately NOT a catalog member, and the line is drawn where the spec already
-// draws it rather than at a flag we invented.
+// This SUPERSEDES the ad-hoc design that shipped in #92. `convoy run` is now exactly `convoy add` —
+// same flags, same validation, same catalog write — plus a launch and an attach. The verb set is:
 //
-// Why not a transient catalog entry (the "ephemeral declaration" fork in open-questions.md):
-//   1. The catalog syncs under a UNION/NO-DELETE policy (see fabric-sync.ts, and the spec's `retired`
-//      field: "an edit, never a file delete"). A per-run entry is therefore PERMANENT, fleet-wide garbage
-//      that nothing can ever collect. Ad-hoc sessions are the highest-frequency kind; that is the worst
-//      possible thing to make undeletable.
-//   2. `supervisor` is required for every non-root agent. An ad-hoc session has no honest answer, so an
-//      ephemeral declaration would have to fabricate one and corrupt the supervision tree.
-//   3. convoy's own schema already refuses it: `strategy` accepts ONLY "permanent", and
-//      agent-file.test.ts asserts `strategy = "ephemeral"` throws. Declaring-but-ephemeral is a shape the
-//      declaration contract does not have.
+//   add     declare                              (no launch)
+//   render  materialize the overlay              (no launch, no bus)
+//   up      reconcile — launch what is declared  (no attach)
+//   run     declare, launch, and attach
 //
-// What an ad-hoc session consequently does NOT get — stated here because the whole risk of this command
-// is someone later assuming it is equivalent to a declared one:
-//   · no catalog entry            → `convoy up` cannot reconcile it, and never will
-//   · no respawn / no recovery    → dies with its process; a host reboot does not bring it back (R44)
-//   · no durable context          → its identity is minted per launch, so it starts empty every time and
-//                                   CANNOT satisfy R48/R49 by construction. This is the honest reason a
-//                                   generated name is safe here: nothing is promised on top of it.
-//   · no adoption path            → it cannot later become declared; declare it properly instead.
+// Why the ad-hoc model was wrong, in one sentence: an undeclared session has no stable identity,
+// therefore no durable `context/` directory, therefore it cannot externalize state or converge after a
+// restart — a permanent second class of session that could never be promoted. Making `run` declare means
+// every agent gets the same guarantees and the ad-hoc/declared distinction disappears rather than being
+// managed forever.
 //
-// What it DOES get, because it launches through convoy's real launch path rather than bare-exec'ing a
-// harness: the network's ST_ROOT/PTY_ROOT wiring, a bus identity with inbox/archive (so it is addressable
-// and observable), persona + permission-mode derivation, pretrust, and a real pty session.
+// #92's three objections do not survive:
+//   1. "`supervisor` is required for every non-root agent" — FALSE. `parseAgentFile` requires only
+//      `identity` and `role`; there is no such field requirement. This was refuted on review.
+//   2. "A per-run catalog entry is permanent fleet-wide garbage (union/no-delete sync)." Permanence is now
+//      the INTENT, not a leak: a run-created agent is a declared agent that happened to be started
+//      interactively. `retired = true` is the documented way to decommission one.
+//   3. "`strategy` accepts only `permanent`." Consistent, not an obstacle — a run-created agent IS a real
+//      declared agent, so the one legal value is the correct one.
+//
+// The coherence property that makes this safe: `convoy up`'s reconcile keys liveness on the bus id
+// `<host>.<identity>` (reconcile.ts `agentBusId`), and `run` launches through the very same `nativeLaunch`
+// that up's reconcile uses, pinning the same identity-derived session id. So a session started by `run` is
+// ADOPTED by a concurrently-running `convoy up` — never double-spawned. Declaring and launching in one
+// breath is indistinguishable, to every other verb, from `add` followed by `up`.
 
-import { isValidIdentity } from "./agent-spec.ts";
-
-/** Prefix marking a bus identity as ad-hoc. Chosen so `st agents` / `convoy ls` / `pty ls` all show at a
- *  glance that a session is outside the declaration contract, with no lookup and no extra field. */
-export const AD_HOC_PREFIX = "run-";
-
-/** Length of the random discriminator. 6 base36 chars ≈ 2.2e9 — collision risk is negligible at the
- *  handful-per-day rate ad-hoc sessions actually occur, and the whole identity stays 10 bytes so it costs
- *  almost nothing against the socket-path budget (`<PTY_ROOT>/<prefix>.<identity>.ding.sock`). */
-export const AD_HOC_DISCRIMINATOR_LEN = 6;
-
-/** Generate an ad-hoc identity: `run-<random base36>`.
+/** What `convoy run` should do about the declaration + session that already exist (or don't).
  *
- *  RANDOM, deliberately, not a counter. #88 item 6 is about `<role>-<n>` counter names: a counter
- *  re-derives within each parent's lifetime, so after a restart `worker-2` names a DIFFERENT agent and
- *  would read a stranger's `context/now.md` as its own memory. A random discriminator never recurs, so
- *  the silent-inheritance failure is impossible by construction rather than merely discouraged.
- *
- *  `rand` is injectable so the generator is testable without stubbing globals. */
-export function generateAdHocIdentity(rand: () => number = Math.random): string {
-  let s = "";
-  while (s.length < AD_HOC_DISCRIMINATOR_LEN) {
-    // Drop the leading "0." and take base36 digits; loop because Math.random() can return a short string.
-    s += rand().toString(36).slice(2);
-  }
-  return `${AD_HOC_PREFIX}${s.slice(0, AD_HOC_DISCRIMINATOR_LEN)}`;
+ *  `run` deliberately does NOT inherit `add`'s flat "already declared → refuse without --force". The
+ *  headline property of the declared model is that an agent's durable context SURVIVES a restart, so
+ *  re-running an identity you already declared is the intended everyday path — the resume — not a
+ *  collision. Refusing it would break the exact thing this redesign exists to deliver. */
+export type RunAction =
+  /** Not declared → write the agent file, launch, attach. The first-run path. */
+  | "declare"
+  /** Declared, no live session → launch from the EXISTING declaration, attach. The resume path: durable
+   *  context is picked back up. The declaration is left untouched; changing it needs --force. */
+  | "resume"
+  /** Declared and already live → attach to the running session. No re-declare, no relaunch: joining an
+   *  agent that is already working must never restart it and lose its in-flight state. */
+  | "attach"
+  /** Declared, not live, --force → overwrite the declaration with the flags given now, then launch+attach. */
+  | "redeclare"
+  /** Declared AND live AND --force → REFUSE. Overwriting a live agent's declaration and relaunching it
+   *  would spawn a second session on the same pinned session id. `convoy reload` is the existing verb for
+   *  kill-and-respawn, so point at it rather than growing a second way to do it. */
+  | "refuse-live-force";
+
+export interface RunSituation {
+  /** A catalog entry for this identity already exists. */
+  readonly declared: boolean;
+  /** A live pty session is already serving this identity's bus id. */
+  readonly live: boolean;
+  /** --force was passed. */
+  readonly force: boolean;
 }
 
-/** True when an identity was minted by `convoy run`. Used to keep the disclosure honest: an explicitly
- *  named ad-hoc session (`--identity`) is still ad-hoc, but its name at least CAN recur, so it is worth
- *  telling the user that naming alone does not make it declared. */
-export function isAdHocIdentity(identity: string): boolean {
-  return identity.startsWith(AD_HOC_PREFIX);
+/** Resolve what `convoy run` does, given what already exists. Pure — the decision table is the design,
+ *  so it is testable without a network, a catalog, or a pty. */
+export function resolveRunAction(s: RunSituation): RunAction {
+  if (!s.declared) return "declare";
+  if (s.live) return s.force ? "refuse-live-force" : "attach";
+  return s.force ? "redeclare" : "resume";
 }
 
-/** Validate an operator-supplied `--identity` for `convoy run`.
- *
- *  Returns an error string, or null when acceptable. Deliberately REFUSES a name that collides with a
- *  declared catalog member: an ad-hoc session that shares an identity with a declared agent would write
- *  into that agent's bus folder — the same read-a-stranger's-memory failure #88 item 6 exists to prevent,
- *  arrived at from the other direction. */
-export function validateRunIdentity(identity: string, declared: readonly string[]): string | null {
-  if (!isValidIdentity(identity)) {
-    return `invalid identity "${identity}" — lowercase alphanumeric plus \`. _ -\`, starting alphanumeric.`;
-  }
-  if (declared.includes(identity)) {
-    return (
-      `"${identity}" is already a DECLARED agent in this network. An ad-hoc session under that identity would ` +
-      `share its bus folder and could read or overwrite its durable context. Pick another name, or run the ` +
-      `declared agent with \`convoy up\`.`
-    );
-  }
-  return null;
-}
-
-/** The contract disclosure printed on every ad-hoc launch.
- *
- *  Printed EVERY time, not once and not behind a flag. The stated risk of having this command at all is
- *  that it quietly becomes the default and the declared path withers; a notice that names what is missing
- *  and points at `convoy add` on every single launch is the cheapest available counter-pressure, and it
- *  costs nothing to anyone who genuinely wants a one-off. */
-export function adHocNotice(identity: string, busId: string, role: string): string {
-  // The suggested declared name is deliberately a PLACEHOLDER, never this session's identity. Echoing back
-  // a generated `run-b3ur0v` would propose carrying a meaningless name into the catalog — and a meaningless
-  // declared name is precisely what breaks context continuity, since nobody re-derives it on the next
-  // cold boot. The whole value of declaring is choosing a name that means something.
-  const generated = isAdHocIdentity(identity);
-  const continuity = generated
-    ? `    · its identity is minted per launch, so it has no durable context and starts empty every time.\n`
-    : `    · it is undeclared, so nothing recreates it — its context does not survive as a managed session's would.\n`;
+/** The message for the refused case, naming the verb that actually does what the user asked for. */
+export function liveForceRefusal(identity: string): string {
   return (
-    `  ad-hoc session — NOT a declared catalog member.\n` +
-    `    · \`convoy up\` will not reconcile, respawn, or recover it; it dies with its process.\n` +
-    continuity +
-    `    · addressable on the bus as ${busId} while it lives.\n` +
-    `  For work that should survive a restart, declare it instead: \`convoy add ${role} --identity <a-meaningful-name>\`.`
+    `"${identity}" is declared AND already running. \`--force\` would overwrite its declaration and launch a ` +
+    `SECOND session on the same pinned session id. To pick up the running one, drop \`--force\` — ` +
+    `\`convoy run --identity ${identity}\` attaches to it. To apply a CHANGED declaration to a live agent, use ` +
+    `\`convoy reload ${identity}\` (kill + respawn), or \`convoy down ${identity}\` and re-run with --force.`
+  );
+}
+
+/** The note printed when `run` resumes or attaches to an EXISTING declaration while the caller also passed
+ *  configuration flags. Silently ignoring `--model`/`--harness`/... would be a real footgun: the user would
+ *  believe they changed something. `add` gates a re-declare behind `--force`; `run` says so out loud. */
+export function staleFlagsNote(identity: string, flags: readonly string[]): string | null {
+  if (flags.length === 0) return null;
+  return (
+    `  ! using the EXISTING declaration for "${identity}" — ${flags.join(", ")} ${flags.length === 1 ? "was" : "were"} ignored.\n` +
+    `    The catalog entry is the source of truth once it exists. \`--force\` re-declares it with these flags ` +
+    `(the agent must not be running), or edit the agent file directly.`
+  );
+}
+
+/** The configuration flags that describe a DECLARATION (as opposed to flags that only steer this
+ *  invocation, like --network / --dry-run / --no-attach). Used to detect the stale-flag case above. */
+export const DECLARATION_FLAGS = [
+  "--harness",
+  "--model",
+  "--transport",
+  "--mcp",
+  "--dir",
+  "--bin",
+  "--supervisor",
+  "--persona",
+  "--permanent",
+  "--host",
+] as const;
+
+/** Which declaration flags the caller actually passed. */
+export function passedDeclarationFlags(args: readonly string[]): string[] {
+  return DECLARATION_FLAGS.filter((f) => args.includes(f));
+}
+
+/** The line `run` prints once the session is up, stating the guarantees it DOES have — the exact inverse
+ *  of #92's `adHocNotice`, which existed to disclaim them. Detaching is safe and is worth saying: a pty
+ *  session outlives its client, and because the agent is declared, `convoy up` also respawns it if the
+ *  process dies. That is the whole point of routing `run` through the declared path. */
+export function declaredRunNotice(identity: string, busId: string, sessionRef: string): string {
+  return (
+    `  declared agent — detaching leaves it RUNNING.\n` +
+    `    · detach with the pty escape; re-attach any time with \`convoy run --identity ${identity}\` or \`pty attach ${sessionRef}\`.\n` +
+    `    · \`convoy up\` reconciles and respawns it like any other catalog member; its context/ survives a restart.\n` +
+    `    · addressable on the bus as ${busId}.\n` +
+    `  Decommission it with \`retired = true\` in its agent file (\`convoy down ${identity}\` just stops the session).`
   );
 }

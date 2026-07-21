@@ -1,7 +1,7 @@
 // A thin promise wrapper around child_process for the few tools convoy still shells (`st`, `git`).
 // Most pty interaction is native via @compoundingtech/pty/client (src/host.ts); this is the residual seam.
 
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { homedir } from "node:os";
 
 export interface ExecResult {
@@ -42,6 +42,19 @@ export function enrichedPath(): string {
 /** Build a child env with PATH forced to the enriched value (deterministic tool resolution). */
 export function childEnv(overlay?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...(overlay ?? process.env), PATH: enrichedPath() };
+}
+
+/** Run a child with the caller's OWN stdio — for handing the terminal over, not for capturing output.
+ *
+ *  `run` above buffers stdout/stderr through execFile, which is exactly wrong for `pty attach`: the child
+ *  needs the real TTY to put the terminal in raw mode, size the pane, and forward the detach key. Resolves
+ *  with the child's exit status once the user detaches or the session ends. */
+export function execInteractive(cmd: string, args: string[], opts: { cwd?: string } = {}): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { cwd: opts.cwd, env: childEnv(), stdio: "inherit" });
+    child.on("error", () => resolve(127)); // command not found / not executable
+    child.on("close", (code, signal) => resolve(typeof code === "number" ? code : signal ? 1 : 0));
+  });
 }
 
 export function run(

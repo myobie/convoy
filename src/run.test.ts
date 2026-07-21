@@ -1,12 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isValidIdentity } from "./agent-spec.ts";
 import { COMMANDS } from "./command-table.ts";
-import { AD_HOC_PREFIX, adHocNotice, generateAdHocIdentity, isAdHocIdentity, validateRunIdentity } from "./run.ts";
+import { declaredRunNotice, liveForceRefusal, passedDeclarationFlags, resolveRunAction, staleFlagsNote } from "./run.ts";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const bin = join(root, "bin", "convoy");
@@ -22,134 +21,243 @@ function cli(args: string[], home: string): { rc: number; out: string; err: stri
   return { rc: r.status ?? -1, out: r.stdout ?? "", err: r.stderr ?? "" };
 }
 
-describe("ad-hoc identity generation", () => {
-  it("mints `run-<random>` — the prefix is what makes a session visibly undeclared in `pty ls` / `st agents`", () => {
-    const id = generateAdHocIdentity(() => 0.123456789);
-    expect(id.startsWith(AD_HOC_PREFIX)).toBe(true);
-    expect(isAdHocIdentity(id)).toBe(true);
+// ---- The decision table: what `run` does about what already exists ----
+
+describe("resolveRunAction — the four states a `convoy run` can find, plus the one refusal", () => {
+  it("not declared → declare (write the agent file, launch, attach): the first-run path", () => {
+    expect(resolveRunAction({ declared: false, live: false, force: false })).toBe("declare");
   });
 
-  it("produces an identity the bus grammar accepts — a name convoy mints must be one smalltalk can bind", () => {
-    // #88 item 2's failure ordering: a name that launches cleanly and is then rejected by the bus is the
-    // worst case. A GENERATED name has no operator to blame, so it must be valid by construction.
-    for (let i = 0; i < 200; i++) {
-      expect(isValidIdentity(generateAdHocIdentity())).toBe(true);
-    }
+  it("ACCEPTANCE: declared but NOT live → RESUME, never a refusal — this is the whole point of declaring", () => {
+    // #92's `run` refused an identity that collided with a declared agent, and `add` refuses a re-declare
+    // without --force. Inheriting either would break the headline property: an agent's durable context
+    // survives a restart, so re-running a name you already declared is the everyday path, not a collision.
+    expect(resolveRunAction({ declared: true, live: false, force: false })).toBe("resume");
   });
 
-  it("stays short, so the ding socket path fits its budget", () => {
-    // pty binds `<PTY_ROOT>/<prefix>.<identity>.ding.sock` against a limited sun_path. A generated name
-    // must not be what pushes a network over that edge.
-    expect(generateAdHocIdentity().length).toBeLessThanOrEqual(12);
+  it("declared AND live → attach to the running session (never restart it and lose in-flight state)", () => {
+    expect(resolveRunAction({ declared: true, live: true, force: false })).toBe("attach");
   });
 
-  it("is RANDOM, not a counter — a counter re-derives and would hand a restart a stranger's context (#88 item 6)", () => {
-    // The whole reason a generated name is tolerable here: `run-<random>` never recurs, so the silent
-    // inherit-someone-else's-`now.md` failure is impossible rather than merely discouraged.
-    const seen = new Set<string>();
-    for (let i = 0; i < 500; i++) seen.add(generateAdHocIdentity());
-    expect(seen.size).toBeGreaterThan(490);
+  it("declared, not live, --force → redeclare with the flags given now, then launch", () => {
+    expect(resolveRunAction({ declared: true, live: false, force: true })).toBe("redeclare");
   });
 
-  it("respects an injected random source, so the generator is testable without stubbing globals", () => {
-    let n = 0;
-    const seq = (): number => [0.111111, 0.222222, 0.333333][n++ % 3]!;
-    const a = generateAdHocIdentity(seq);
-    n = 0;
-    expect(generateAdHocIdentity(seq)).toBe(a);
+  it("declared AND live AND --force → refuse: relaunching would double-spawn on the same pinned session id", () => {
+    expect(resolveRunAction({ declared: true, live: true, force: true })).toBe("refuse-live-force");
+  });
+
+  it("--force on an UNdeclared agent is simply the declare path (nothing to overwrite)", () => {
+    expect(resolveRunAction({ declared: false, live: false, force: true })).toBe("declare");
   });
 });
 
-describe("validateRunIdentity", () => {
-  it("rejects a name the bus grammar would refuse", () => {
-    expect(validateRunIdentity("Worker_Fix", [])).toContain("invalid identity");
+describe("liveForceRefusal — points at the verb that actually does what was asked", () => {
+  it("names `convoy reload`, the existing kill+respawn verb, rather than growing a second way to do it", () => {
+    const m = liveForceRefusal("fodfix");
+    expect(m).toContain("convoy reload fodfix");
+    expect(m).toContain("SECOND session");
   });
 
-  it("REFUSES to reuse a declared agent's identity — an ad-hoc session must never open a declared agent's bus folder", () => {
-    // The mirror image of #88 item 6: reading a stranger's durable context, arrived at from the other
-    // direction. A declared agent that is merely DOWN right now still owns its context/.
-    const problem = validateRunIdentity("cos", ["cos", "fabric"]);
-    expect(problem).toContain("already a DECLARED agent");
-    expect(problem).toContain("convoy up");
-  });
-
-  it("accepts a fresh, well-formed name", () => {
-    expect(validateRunIdentity("scratch", ["cos"])).toBeNull();
+  it("tells the caller that dropping --force attaches to the running agent", () => {
+    expect(liveForceRefusal("fodfix")).toContain("convoy run --identity fodfix");
   });
 });
 
-describe("adHocNotice", () => {
-  it("names every property the session does NOT have, so nobody reads it as equivalent to a declared one", () => {
-    const notice = adHocNotice("run-abc123", "dev3.run-abc123", "worker");
-    expect(notice).toContain("NOT a declared catalog member");
-    expect(notice).toMatch(/respawn|recover/);
-    expect(notice).toContain("no durable context");
-    expect(notice).toContain("dev3.run-abc123");
+describe("staleFlagsNote — never silently ignore a flag that looks like it changed something", () => {
+  it("names the ignored flags and how to actually apply them", () => {
+    const n = staleFlagsNote("fodfix", ["--model", "--harness"]);
+    expect(n).toContain("--model, --harness");
+    expect(n).toContain("--force");
+    expect(n).toContain("EXISTING declaration");
   });
 
-  it("points at the declared path — the counter-pressure against `run` quietly becoming the default", () => {
-    expect(adHocNotice("run-abc123", "dev3.run-abc123", "worker")).toContain("convoy add");
+  it("says nothing when no declaration flags were passed (the clean resume)", () => {
+    expect(staleFlagsNote("fodfix", [])).toBeNull();
+  });
+
+  it("agrees in number so the sentence reads correctly for a single flag", () => {
+    expect(staleFlagsNote("fodfix", ["--model"])).toContain("--model was ignored");
   });
 });
+
+describe("passedDeclarationFlags — distinguishes declaration flags from per-invocation ones", () => {
+  it("picks up flags that describe the DECLARATION", () => {
+    expect(passedDeclarationFlags(["run", "--identity", "x", "--model", "m", "--permanent"])).toEqual(["--model", "--permanent"]);
+  });
+
+  it("ignores flags that only steer THIS invocation — they are not part of the agent file", () => {
+    // --network/--dry-run/--no-attach/--force change what this command does, not what the agent IS, so
+    // passing them on a resume is not a silently-ignored configuration change.
+    expect(passedDeclarationFlags(["run", "--network", "n", "--dry-run", "--no-attach", "--force"])).toEqual([]);
+  });
+});
+
+describe("declaredRunNotice — states the guarantees, the exact inverse of #92's disclaimer", () => {
+  it("ACCEPTANCE: says detaching leaves the agent RUNNING (a pty session outlives its client)", () => {
+    const n = declaredRunNotice("fodfix", "dev3.fodfix", "dev3.fodfix");
+    expect(n).toContain("detaching leaves it RUNNING");
+  });
+
+  it("promises reconcile + respawn + durable context — the things an ad-hoc session could never have", () => {
+    const n = declaredRunNotice("fodfix", "dev3.fodfix", "dev3.fodfix");
+    expect(n).toContain("convoy up");
+    expect(n).toContain("context/ survives a restart");
+  });
+
+  it("tells the caller how to get back in, by the same command they just ran", () => {
+    expect(declaredRunNotice("fodfix", "dev3.fodfix", "dev3.fodfix")).toContain("convoy run --identity fodfix");
+  });
+
+  it("points decommissioning at `retired = true`, not at `convoy down` (which only stops the session)", () => {
+    expect(declaredRunNotice("fodfix", "dev3.fodfix", "dev3.fodfix")).toContain("retired = true");
+  });
+
+  it("carries NO ad-hoc disclaimer — the superseded wording must not survive anywhere", () => {
+    const n = declaredRunNotice("fodfix", "dev3.fodfix", "dev3.fodfix");
+    expect(n).not.toContain("ad-hoc");
+    expect(n).not.toContain("NOT a declared");
+  });
+});
+
+// ---- The command table: `run` must present as `add` + launch + attach ----
 
 describe("`run` in the command table", () => {
-  const run = COMMANDS.find((c) => c.name === "run");
+  const runCmd = COMMANDS.find((c) => c.name === "run");
+  const addCmd = COMMANDS.find((c) => c.name === "add");
+  const names = (c: typeof runCmd): string[] => (c?.flags ?? []).map((f) => f.name).sort();
 
   it("is declared, so dispatch accepts its flags and completions cover it", () => {
-    expect(run).toBeDefined();
+    expect(runCmd).toBeDefined();
   });
 
-  it("has NO --permanent flag: a permanent ad-hoc session is a contradiction — nothing declares it, so nothing can bring it back", () => {
-    expect(run?.flags?.some((f) => f.name === "permanent")).toBe(false);
+  it("ACCEPTANCE: `run` offers exactly `add`'s flags plus --no-attach — the two verbs cannot drift apart", () => {
+    // The claim of this design is "run IS add, plus launch and attach". If the flag sets diverge, that
+    // claim is false at the surface the user actually touches.
+    expect(names(runCmd)).toEqual([...names(addCmd), "no-attach"].sort());
   });
 
-  it("offers --config-dir, the account selection the launcher aliases it replaces actually used", () => {
-    expect(run?.flags?.some((f) => f.name === "config-dir")).toBe(true);
+  it("has --permanent now: a run-created agent is a real catalog member, so always-on is coherent", () => {
+    expect(runCmd?.flags?.some((f) => f.name === "permanent")).toBe(true);
+  });
+
+  it("has --host, so a run-created agent can be owned by a named host like any declared one", () => {
+    expect(runCmd?.flags?.some((f) => f.name === "host")).toBe(true);
+  });
+
+  it("drops --prefix: the declaration carries the host prefix, and an override would desync session from agent file", () => {
+    expect(runCmd?.flags?.some((f) => f.name === "prefix")).toBe(false);
+  });
+
+  it("ACCEPTANCE: the help text no longer advertises the superseded ad-hoc semantics", () => {
+    expect(runCmd?.desc).not.toMatch(/ad-hoc|not declared|not reconciled|not respawned/i);
+    expect(runCmd?.desc).toMatch(/declare/i);
   });
 });
+
+// ---- End to end, through the real CLI ----
 
 describe("`convoy run` end to end", () => {
   let home: string;
   const setup = (): string => {
-    home = mkdtempSync(join(tmpdir(), "convoy-run-"));
+    home = mkdtempSync(join(tmpdir(), "cvr-"));
     return home;
   };
   const teardown = (): void => rmSync(home, { recursive: true, force: true });
+  const catalogOf = (h: string): string => join(h, "convoy", "default", "catalog");
 
-  it("writes NO catalog entry — the defining property: an ad-hoc session is not a declared member", () => {
+  it("ACCEPTANCE: WRITES a catalog entry — the defining inversion of #92, which wrote none", () => {
     const h = setup();
     try {
-      const net = join(h, "convoy", "default");
-      const catalog = join(net, "catalog");
-      mkdirSync(catalog, { recursive: true });
-      const r = cli(["run", "--dry-run", "--dir", h], h);
-      expect(readdirSync(catalog)).toEqual([]);
-      expect(r.out).toContain("ad-hoc session");
+      mkdirSync(catalogOf(h), { recursive: true });
+      const r = cli(["run", "worker", "--identity", "fodfix", "--dir", h, "--no-attach", "--dry-run"], h);
+      expect(r.rc).toBe(0);
+      // --dry-run shows the agent file it WOULD write; the declaration is the point, so it must be visible.
+      expect(r.out).toContain('identity = "fodfix"');
+      expect(r.out).toContain("agent file");
     } finally {
       teardown();
     }
   });
 
-  it("prints the contract disclosure on every launch, not behind a flag", () => {
+  it("ACCEPTANCE: requires --identity — a generated name is the hashed-name problem that kills durable context", () => {
     const h = setup();
     try {
-      const r = cli(["run", "--dry-run", "--dir", h], h);
-      expect(r.out).toContain("NOT a declared catalog member");
-      expect(r.out).toContain("convoy add");
-    } finally {
-      teardown();
-    }
-  });
-
-  it("refuses an --identity that collides with a declared agent (rc=2), before doing anything", () => {
-    const h = setup();
-    try {
-      const catalog = join(h, "convoy", "default", "catalog");
-      mkdirSync(catalog, { recursive: true });
-      writeFileSync(join(catalog, "cos.toml"), 'identity = "cos"\nrole = "chief-of-staff"\n');
-      const r = cli(["run", "--identity", "cos", "--dry-run", "--dir", h], h);
+      const r = cli(["run", "worker", "--dir", h, "--dry-run"], h);
       expect(r.rc).toBe(2);
-      expect(r.err).toContain("already a DECLARED agent");
+      expect(r.err).toContain("--identity is required");
+      // and it must explain WHY, since #92 accepted the omission happily
+      expect(r.err).toContain("context/");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("ACCEPTANCE: an --identity that is already DECLARED resumes it — #92 refused this outright (rc=2)", () => {
+    const h = setup();
+    try {
+      const catalog = catalogOf(h);
+      mkdirSync(catalog, { recursive: true });
+      writeFileSync(join(catalog, "cos.toml"), 'identity = "cos"\nrole = "chief-of-staff"\nworkspace = "' + h + '"\n');
+      const r = cli(["run", "--identity", "cos", "--dry-run", "--no-attach"], h);
+      expect(r.rc).toBe(0);
+      expect(r.out).toContain("resuming the declared agent");
+      expect(r.err).not.toContain("already a DECLARED agent");
+    } finally {
+      teardown();
+    }
+  });
+
+  it("a resume does NOT rewrite the declaration — the catalog is the source of truth once it exists", () => {
+    const h = setup();
+    try {
+      const catalog = catalogOf(h);
+      mkdirSync(catalog, { recursive: true });
+      const file = join(catalog, "cos.toml");
+      const original = 'identity = "cos"\nrole = "chief-of-staff"\nworkspace = "' + h + '"\n';
+      writeFileSync(file, original);
+      const r = cli(["run", "--identity", "cos", "--model", "claude-fable-5", "--dry-run", "--no-attach"], h);
+      expect(r.rc).toBe(0);
+      expect(readFileSync(file, "utf8")).toBe(original); // untouched
+      expect(r.out).toContain("--model"); // and it said so, rather than silently dropping it
+    } finally {
+      teardown();
+    }
+  });
+
+  it("accepts --permanent, which #92 rejected (rc=2) as a contradiction for an undeclared session", () => {
+    const h = setup();
+    try {
+      mkdirSync(catalogOf(h), { recursive: true });
+      const r = cli(["run", "worker", "--identity", "always", "--dir", h, "--permanent", "--dry-run", "--no-attach"], h);
+      expect(r.rc).toBe(0);
+      expect(r.out).toContain('strategy = "permanent"');
+    } finally {
+      teardown();
+    }
+  });
+
+  it("validates the identity against the bus grammar BEFORE writing to the synced catalog", () => {
+    const h = setup();
+    try {
+      mkdirSync(catalogOf(h), { recursive: true });
+      const r = cli(["run", "worker", "--identity", "Worker_Fix", "--dir", h, "--dry-run"], h);
+      expect(r.rc).toBe(2);
+      expect(readdirSync(catalogOf(h))).toEqual([]);
+    } finally {
+      teardown();
+    }
+  });
+
+  it("refuses with no workspace, exactly as `add` does — run inherits add's validation wholesale", () => {
+    const h = setup();
+    try {
+      mkdirSync(catalogOf(h), { recursive: true });
+      const r = cli(["run", "worker", "--identity", "nodir", "--dry-run"], h);
+      const add = cli(["add", "worker", "--identity", "nodir", "--dry-run"], h);
+      expect(r.rc).toBe(1);
+      expect(r.err).toContain("no workspace");
+      expect(add.err).toContain("no workspace"); // same message, same code path
     } finally {
       teardown();
     }
@@ -158,19 +266,7 @@ describe("`convoy run` end to end", () => {
   it("rejects an unknown flag rather than silently ignoring it (rc=2), like every other convoy command", () => {
     const h = setup();
     try {
-      const r = cli(["run", "--nope"], h);
-      expect(r.rc).toBe(2);
-      expect(r.err).toContain("unrecognized flag");
-    } finally {
-      teardown();
-    }
-  });
-
-  it("rejects --permanent: respawn semantics are not available to an undeclared session", () => {
-    const h = setup();
-    try {
-      const r = cli(["run", "--permanent", "--dry-run"], h);
-      expect(r.rc).toBe(2);
+      expect(cli(["run", "--nope"], h).rc).toBe(2);
     } finally {
       teardown();
     }
@@ -179,7 +275,7 @@ describe("`convoy run` end to end", () => {
   it("rejects an unknown role", () => {
     const h = setup();
     try {
-      const r = cli(["run", "wizard", "--dry-run"], h);
+      const r = cli(["run", "wizard", "--identity", "x", "--dry-run"], h);
       expect(r.rc).toBe(2);
       expect(r.err).toContain("unknown role");
     } finally {
@@ -188,20 +284,20 @@ describe("`convoy run` end to end", () => {
   });
 });
 
-describe("adHocNotice — the declared-path suggestion", () => {
-  it("suggests a PLACEHOLDER name, never the generated one: a meaningless declared name is what breaks continuity", () => {
-    const notice = adHocNotice("run-b3ur0v", "dev3.run-b3ur0v", "worker");
-    expect(notice).toContain("<a-meaningful-name>");
-    expect(notice).not.toContain("--identity b3ur0v");
+describe("the ad-hoc model is GONE, not merely unused", () => {
+  const src = readFileSync(join(root, "src", "run.ts"), "utf8");
+
+  it("ACCEPTANCE: run.ts exports no ad-hoc machinery — two models in the codebase is the thing being removed", () => {
+    expect(src).not.toContain("export function generateAdHocIdentity");
+    expect(src).not.toContain("export function adHocNotice");
+    expect(src).not.toContain("export function isAdHocIdentity");
+    expect(src).not.toContain("export const AD_HOC_PREFIX");
   });
 
-  it("carries the actual role into the suggestion, so the suggested command is runnable as printed", () => {
-    expect(adHocNotice("run-x1", "dev3.run-x1", "supervisor")).toContain("convoy add supervisor");
-  });
-
-  it("does not claim a per-launch identity when the operator named the session explicitly", () => {
-    const named = adHocNotice("scratch", "dev3.scratch", "worker");
-    expect(named).not.toContain("minted per launch");
-    expect(named).toContain("NOT a declared catalog member");
+  it("commands.ts no longer imports or mints an ad-hoc identity", () => {
+    const cmds = readFileSync(join(root, "src", "commands.ts"), "utf8");
+    expect(cmds).not.toContain("generateAdHocIdentity(");
+    expect(cmds).not.toContain("adHocNotice(");
+    expect(cmds).not.toContain("validateRunIdentity(");
   });
 });

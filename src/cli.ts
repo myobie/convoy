@@ -141,7 +141,7 @@ function printHelp(): void {
       "  add <role>     DECLARE an agent — write its agent file into the synced catalog; NO launch (convoy up runs it) [--identity --host --harness claude|codex --model <id> --transport ding|mcp --mcp --network --dir --persona --permanent --dry-run --force]\n" +
       "  render <id>    materialize an agent's worktree overlay from its catalog agent file — NO launch, NO bus (declarative: add=declare · render=materialize · up=reconcile) [--dir <workspace> --network --dry-run]\n" +
       "  cos --repo <d> bootstrap a Chief of Staff\n" +
-      "  run [role]     launch an AD-HOC session — NOT declared, NOT reconciled, NOT respawned, no durable context (declare it with `add` if it should survive) [--identity --harness claude|codex --model <id> --transport ding|mcp --mcp --network --dir --persona --prefix --config-dir --dry-run --force]\n" +
+      "  run [role]     DECLARE an agent, launch it, and ATTACH — `add` + `up` in one step (detaching leaves it running; re-run to resume it) [--identity --host --harness claude|codex --model <id> --transport ding|mcp --mcp --network --dir --bin --supervisor --persona --permanent --no-attach --dry-run --force]\n" +
       "  up <network>   host a network in the foreground (TCC anchor + supervisor + flapping-cap) [--once = one-shot reconcile-and-exit (adopts live sessions, no daemon) --json]\n" +
       "  down [network] tear down the network — the ONLY path that kills sessions [--dry-run --force --json]\n" +
       "  env [network]  print eval-safe exports for a network's env — `eval \"$(convoy env <net>)\"` sets ST_ROOT+PTY_ROOT [--identity <id>]\n" +
