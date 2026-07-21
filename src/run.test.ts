@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { COMMANDS } from "./command-table.ts";
-import { declaredRunNotice, liveForceRefusal, passedDeclarationFlags, resolveRunAction, staleFlagsNote } from "./run.ts";
+import { declaredRunNotice, liveForceRefusal, livenessAgentFile, passedDeclarationFlags, resolveRunAction, staleFlagsNote } from "./run.ts";
+import { agentBusId } from "./reconcile.ts";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const bin = join(root, "bin", "convoy");
@@ -90,6 +91,29 @@ describe("passedDeclarationFlags — distinguishes declaration flags from per-in
     // --network/--dry-run/--no-attach/--force change what this command does, not what the agent IS, so
     // passing them on a resume is not a silently-ignored configuration change.
     expect(passedDeclarationFlags(["run", "--network", "n", "--dry-run", "--no-attach", "--force"])).toEqual([]);
+  });
+});
+
+describe("livenessAgentFile — the single point where `run` agrees with `up` about what is running", () => {
+  const declared = { identity: "x", role: "worker" as const, host: "otherbox" };
+  const fromArgs = { identity: "x", role: "worker" as const, host: "thisbox" };
+
+  it("ACCEPTANCE: keys on the EXISTING declaration — `up` reconciles on `af.host`, so `run` must too", () => {
+    // `buildDeclaration` ALWAYS populates host (--host ?? this machine), so keying on the args-built file
+    // computes a this-machine bus id for an agent declared `host = otherbox` (catalog file arrived via
+    // fabric sync). run would find nothing live and launch a DUPLICATE beside the real one.
+    expect(livenessAgentFile(declared, fromArgs)).toBe(declared);
+    expect(livenessAgentFile(declared, fromArgs).host).toBe("otherbox");
+  });
+
+  it("falls back to the args-built file only when nothing is declared yet (the first-run path)", () => {
+    expect(livenessAgentFile(null, fromArgs)).toBe(fromArgs);
+  });
+
+  it("keys identically to reconcile's agentBusId for an explicitly-hosted agent", () => {
+    const thisHost = "thisbox";
+    expect(agentBusId(livenessAgentFile(declared, fromArgs), thisHost)).toBe(agentBusId(declared, thisHost));
+    expect(agentBusId(livenessAgentFile(declared, fromArgs), thisHost)).toBe("otherbox.x");
   });
 });
 
@@ -220,6 +244,22 @@ describe("`convoy run` end to end", () => {
       expect(r.rc).toBe(0);
       expect(readFileSync(file, "utf8")).toBe(original); // untouched
       expect(r.out).toContain("--model"); // and it said so, rather than silently dropping it
+    } finally {
+      teardown();
+    }
+  });
+
+  it("resolves an explicitly-hosted declaration to ITS host, not this machine's", () => {
+    const h = setup();
+    try {
+      const catalog = catalogOf(h);
+      mkdirSync(catalog, { recursive: true });
+      writeFileSync(join(catalog, "elsewhere.toml"), 'identity = "elsewhere"\nrole = "worker"\nhost = "otherbox"\nworkspace = "' + h + '"\n');
+      // No --host passed: the declaration's host must still win for the session ref and the bus id.
+      const r = cli(["run", "--identity", "elsewhere", "--dry-run", "--no-attach"], h);
+      expect(r.rc).toBe(0);
+      expect(r.out).toContain("otherbox.elsewhere");
+      expect(r.out).not.toContain(`${hostname().split(".")[0]?.toLowerCase()}.elsewhere`);
     } finally {
       teardown();
     }

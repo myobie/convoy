@@ -30,7 +30,7 @@ import { runFullOrgSuite, runReadinessSuite } from "./doctor/suite.ts";
 import { structureChecks } from "./doctor/structure.ts";
 import { baseFile, ensureInstalled, personasDir, personasInstalled } from "./personas.ts";
 import { ROLES, parseRole } from "./role.ts";
-import { declaredRunNotice, liveForceRefusal, passedDeclarationFlags, resolveRunAction, staleFlagsNote } from "./run.ts";
+import { declaredRunNotice, liveForceRefusal, livenessAgentFile, passedDeclarationFlags, resolveRunAction, staleFlagsNote } from "./run.ts";
 import { busAgentId, isValidModel, preflight, resolvedPersonaPath, sessionId, shortHostname, type AgentSpec, type Transport } from "./agent-spec.ts";
 import { HARNESSES, HARNESS_SESSION_KEYS, HARNESS_SUFFIX_RE, harnessDescriptor, harnessesInPtyToml, harnessLimitations, isHarness, type Harness } from "./harness.ts";
 import { claudeConfigPath, codexConfigPath, pretrustDirs, pretrustDirsCodex } from "./trust.ts";
@@ -986,7 +986,24 @@ export async function cmdRun(args: string[]): Promise<number> {
   // `busIdOf`), so `run` and `up` can never disagree about what "already running" means. The gone-but-pid-
   // alive tolerance is reconcile's too: pty can transiently report `gone` under load, and treating that as
   // dead would relaunch a live agent.
-  const busId = agentBusId(af, shortHostname());
+  // Read the EXISTING declaration first, because liveness must be keyed off it, not off this invocation's
+  // flags. `buildDeclaration` always sets `af.host` (`--host` ?? this machine), whereas reconcile keys on
+  // `entry.af.host ?? thisHost` — the DECLARATION's host. Keying on the args host would mean that for an
+  // agent declared `host = dev4`, a `convoy run --identity <id>` on another box (its catalog file is present
+  // via fabric sync) computes the wrong bus id, sees nothing live, and launches a duplicate. That would
+  // falsify the exact property this design rests on: `run` and `up` must agree on what "already running"
+  // means. Deriving both from the same source makes them agree by construction.
+  let existingAf: AgentFile | null = null;
+  if (existed) {
+    try {
+      existingAf = readAgentFile(path);
+    } catch (e) {
+      err(`agent "${identity}" is declared at ${path} but its agent file could not be read: ${e instanceof Error ? e.message : String(e)}`);
+      return 1;
+    }
+  }
+
+  const busId = agentBusId(livenessAgentFile(existingAf, af), shortHostname());
   const live = (await new PtyHost(network).sessions()).filter(
     (s) => busIdOf(s) === busId && (!gone(s) || processAlive(s.pid)),
   );
@@ -1001,15 +1018,14 @@ export async function cmdRun(args: string[]): Promise<number> {
   // exists, and silently re-declaring from this invocation's flags would let a stray `--model` mutate a
   // synced, fleet-visible agent file as a side effect of attaching to it.
   const reuseExisting = action === "resume" || action === "attach";
-  let effective = af;
+  const effective = reuseExisting && existingAf ? existingAf : af;
   if (reuseExisting) {
-    try {
-      effective = readAgentFile(path);
-    } catch (e) {
-      err(`agent "${identity}" is declared at ${path} but its agent file could not be read: ${e instanceof Error ? e.message : String(e)}`);
-      return 1;
-    }
-    const note = staleFlagsNote(identity, passedDeclarationFlags(args));
+    // The role is a POSITIONAL, not a flag, so `passedDeclarationFlags` cannot see it — report it
+    // separately rather than silently resuming `cos` as its declared role when the caller typed another.
+    const declaredRole = existingAf?.role;
+    const askedRole = positionals(args)[0];
+    const roleDiffers = askedRole !== undefined && declaredRole !== undefined && parseRole(askedRole) !== declaredRole;
+    const note = staleFlagsNote(identity, [...(roleDiffers ? [`role "${askedRole}"`] : []), ...passedDeclarationFlags(args)]);
     if (note) out(note);
   }
 
@@ -1019,6 +1035,9 @@ export async function cmdRun(args: string[]): Promise<number> {
 
   out(`convoy run — ${identity} (${effective.harness ?? "claude"}, ${effective.role})`);
   out(`workspace: ${effective.workspace ?? "(none)"}`);
+  // Print the host-prefixed ids: they are what `convoy up`, `pty attach`, and `st` all key on, and showing
+  // them makes an unexpected host (a declaration owned by another box) visible before anything launches.
+  out(`session: ${ref} · bus: ${busAgentId(spec)}`);
 
   if (action === "attach") {
     out(`  already running (${live.map((s) => s.name).join(", ")}) — attaching, NOT restarting it.`);

@@ -111,6 +111,21 @@ export function passedDeclarationFlags(args: readonly string[]): string[] {
   return DECLARATION_FLAGS.filter((f) => args.includes(f));
 }
 
+/** Which agent file `run` must key LIVENESS on: the existing declaration whenever there is one, never the
+ *  one just built from this invocation's flags.
+ *
+ *  This is the single point where `run` either does or does not agree with `convoy up` about what "already
+ *  running" means, so it is a named function rather than an inline `??` — the coherence claim of this whole
+ *  design reduces to this choice.
+ *
+ *  `up`'s reconcile keys on `entry.af.host ?? thisHost` — the DECLARATION's host. `buildDeclaration` always
+ *  populates `host` (`--host` ?? this machine), so keying on the args-built file would compute a
+ *  this-machine-prefixed bus id for an agent declared `host = otherbox` (its catalog file having arrived by
+ *  fabric sync). `run` would then find nothing live and launch a DUPLICATE alongside the real one. */
+export function livenessAgentFile<T>(existing: T | null, fromArgs: T): T {
+  return existing ?? fromArgs;
+}
+
 /** The line `run` prints once the session is up, stating the guarantees it DOES have — the exact inverse
  *  of #92's `adHocNotice`, which existed to disclaim them. Detaching is safe and is worth saying: a pty
  *  session outlives its client, and because the agent is declared, `convoy up` also respawns it if the
