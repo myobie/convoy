@@ -74,6 +74,8 @@ describe("writePtyToml (pinned hostname-prefixed ids, cold start)", () => {
     prefix: "silber",
     configDir: null,
     model: null,
+    bin: null,
+    env: null,
     ...over,
   });
 
@@ -354,6 +356,8 @@ describe("writeContextFiles — clean-worktree wiring (convoy must not dirty a r
       prefix: null,
       configDir: null,
       model: null,
+      bin: null,
+      env: null,
     };
   }
 
@@ -469,6 +473,8 @@ describe("convoy add clean-worktree — pty.toml + settings + context, EVERY aut
       prefix: null,
       configDir: null,
       model: null,
+      bin: null,
+      env: null,
     };
   }
 

@@ -33,6 +33,14 @@ export interface AgentSpec {
    *  harness default (today's behavior). A free-form string (model ids churn), but charset-validated
    *  (`isValidModel`) because it is interpolated into the `sh -c` launch command. */
   model: string | null;
+  /** Run THIS in place of the bare harness name (`claude`/`codex`) when deriving the launch command; null
+   *  = the harness's own name, today's behavior. Deployments wrap their harness for credential selection,
+   *  persona projection, policy gates, and telemetry; execing the bare binary puts a convoy-managed
+   *  session outside the boundary every other session in that deployment runs inside. */
+  bin: string | null;
+  /** Extra env merged into the derived harness session, under the derived wiring (which always wins).
+   *  Credential selection (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) rides here. */
+  env: Record<string, string> | null;
 }
 
 /** INTERIM POSTURE: every agent launches `bypassPermissions`. Unattended agents (esp. workers) stall

@@ -9,40 +9,13 @@
 // src/fabric-sync.ts), and B's reconcile sees host==B + launches it. No RPC — the synced folder IS the
 // scheduler. Pure (no side effects) so it's unit-testable; up executes the plan.
 
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
-import { catalogDir, readAgentFile, type AgentFile } from "./agent-file.ts";
+import type { AgentFile } from "./agent-file.ts";
 import { gone, processAlive, type SupervisedSession } from "./host.ts";
 
-/** One catalog entry — the parsed agent file + its on-disk path (for reads/edits). */
-export interface CatalogEntry {
-  af: AgentFile;
-  path: string;
-}
-
-/** Read every agent file in `<net>/catalog/`. MALFORMED files are SKIPPED (collected in `errors`) so one bad
- *  edit doesn't halt the whole reconcile — a robust supervisor never wedges on a single typo'd job file.
- *  Returns empty when the catalog dir doesn't exist yet (a fresh/uninited network). Sorted for determinism. */
-export function readCatalog(networkDir: string): { entries: CatalogEntry[]; errors: { path: string; error: string }[] } {
-  const dir = catalogDir(networkDir);
-  let names: string[];
-  try {
-    names = readdirSync(dir).filter((n) => n.endsWith(".toml") && !n.startsWith("."));
-  } catch {
-    return { entries: [], errors: [] }; // no catalog dir yet
-  }
-  const entries: CatalogEntry[] = [];
-  const errors: { path: string; error: string }[] = [];
-  for (const n of names.sort()) {
-    const path = join(dir, n);
-    try {
-      entries.push({ af: readAgentFile(path), path });
-    } catch (e) {
-      errors.push({ path, error: e instanceof Error ? e.message : String(e) });
-    }
-  }
-  return { entries, errors };
-}
+// Discovery moved to catalog.ts when the catalog became a TREE of multi-format specs rather than a flat
+// directory of `<identity>.toml`. Re-exported here so reconcile's consumers keep one import.
+export { readCatalog, type Catalog, type CatalogEntry, type CatalogError, type CatalogWarning } from "./catalog.ts";
+import type { CatalogEntry } from "./catalog.ts";
 
 /** The host-prefixed bus id an agent file COMPILES to — `<host>.<identity>` (host defaults to `thisHost`).
  *  This is the key that matches a catalog agent to its running pty session (whose ST_AGENT is this id). */

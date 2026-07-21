@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { down, up, type DownOptions, type UpOptions } from "./up.ts";
-import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdEnv, cmdInit, cmdInstallCli, cmdLs, cmdPersonas, cmdPretrust, cmdReload, cmdRemove, cmdRender, cmdShell, hasFlag, optValue, positionals, unknownFlag } from "./commands.ts";
+import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdEnv, cmdInit, cmdInstallCli, cmdLs, cmdPersonas, cmdPretrust, cmdReload, cmdRemove, cmdRename, cmdRender, cmdShell, hasFlag, optValue, positionals, unknownFlag } from "./commands.ts";
 import { cmdCompletions } from "./completions.ts";
 import { flagAllowList } from "./command-table.ts";
 import { run } from "./exec.ts";
@@ -66,6 +66,7 @@ export async function main(argv: string[]): Promise<void> {
     case "add": code = await cmdAdd(rest); break;
     case "render": code = await cmdRender(rest); break;
     case "remove": code = await cmdRemove(rest); break;
+    case "rename": code = await cmdRename(rest); break;
     case "reload": code = await cmdReload(rest); break;
     case "pretrust": code = await cmdPretrust(rest); break;
     case "install-cli": code = await cmdInstallCli(rest); break;
@@ -139,6 +140,7 @@ function printHelp(): void {
       "  env [network]  print eval-safe exports for a network's env — `eval \"$(convoy env <net>)\"` sets ST_ROOT+PTY_ROOT [--identity <id>]\n" +
       "  shell [network] open an interactive subshell with a network's env exported (pty ls / st just work); exit to leave [--identity <id>]\n" +
       "  remove <id>    remove an agent\n" +
+      "  rename <old> <new>  rename an agent — moves the catalog entry AND the durable bus folder (context/, inbox/, archive/, status), leaving a redirect tombstone [--dry-run --network --host]\n" +
       "  reload <id>    re-materialize an agent from its pty.toml, healing the ding to carry --root (kill + respawn) [--dry-run --write-only]\n" +
       "  pretrust <dir>... batch pre-trust agent dirs before spawning many back-to-back (avoids the trust race) [--config-dir]\n" +
       "  install-cli    symlink convoy + st + pty onto PATH (default ~/.local/bin) — reliable, no npm link [--bin <dir>]\n" +

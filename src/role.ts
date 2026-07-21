@@ -14,6 +14,11 @@ export const ROLE_ALIASES: Readonly<Record<string, Role>> = {
   chiefofstaff: "chief-of-staff",
   cos: "chief-of-staff",
   spawner: "chief-of-staff",
+  // The agent spec names this role `root` — "the network root (formerly chief-of-staff)". Convoy's
+  // internal name predates that and is threaded through personas, permission tiers, and the crash-ding
+  // tier tag, so the spec's name is accepted as an alias rather than renamed underneath all of it.
+  // Without this, a spec written to the published field table is rejected outright.
+  root: "chief-of-staff",
   sup: "supervisor",
   wk: "worker",
   technicalmanager: "technical-manager",

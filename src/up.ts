@@ -209,12 +209,24 @@ export async function up(opts: UpOptions): Promise<number> {
   // the workspace-trust lost-update (a sibling's booting Claude clobbers another's just-written entry — see
   // src/trust.ts). One idempotent atomic write, up front. This is the convoy-core half of the fix; a caller
   // spawning agents outside `convoy up` uses `convoy pretrust <dirs>` before its back-to-back `convoy add`s.
+  //
+  // The batch seeds from BOTH actual and desired state. Seeding from running sessions alone covered only
+  // agents that had already launched at least once — which is precisely the set that does NOT need it.
+  // A first-ever bring-up of N freshly-declared agents (the case the batch exists for) contributed zero
+  // dirs, so every one of them fell through to the per-agent write inside nativeLaunch and raced exactly
+  // as before. The catalog is the desired state, so it names the workspaces that are about to be spawned.
   {
     const dirs = new Set<string>();
     for (const s of await host.sessions()) {
       const pf = s.tags["ptyfile"];
       const dir = pf ? dirname(pf) : s.cwd || null;
       if (dir) dirs.add(dir);
+    }
+    const thisHostForTrust = shortHostname();
+    for (const e of readCatalog(root).entries) {
+      if (e.af.retired) continue;
+      if ((e.af.host ?? thisHostForTrust) !== thisHostForTrust) continue; // another machine will trust its own
+      if (e.af.workspace) dirs.add(e.af.workspace);
     }
     if (dirs.size > 0) {
       // Pre-trust BOTH harness configs for every member — the host doesn't track per-member harness, and a

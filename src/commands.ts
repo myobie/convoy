@@ -16,7 +16,10 @@ import { Bus, isLive, type Agent } from "./bus.ts";
 import { PtyHost, spawnFromPtyFile, workspaceOfPtyfile, type SupervisedSession } from "./host.ts";
 import { busIdOf } from "./up.ts";
 import { discoverSmalltalkDir, nativeLaunch, regenerateDingRoot, writeAgentFiles } from "./launch.ts";
-import { agentFilePath, agentFileToSpec, agentFileToToml, catalogDir, readAgentFile, writeAgentFile, SAMPLE_AGENT_TOML, type AgentFile } from "./agent-file.ts";
+import { agentFilePath, agentFileToSpec, agentFileToToml, catalogDir, isValidBin, readAgentFile, writeAgentFile, SAMPLE_AGENT_TOML, type AgentFile } from "./agent-file.ts";
+import { readCatalog } from "./catalog.ts";
+import { identityErrors } from "./identity.ts";
+import { executeRename, planRename, renamePreview } from "./rename.ts";
 import { declareCatalogSync } from "./fabric-sync.ts";
 import { authReadiness } from "./doctor/auth.ts";
 import { harnessCheckups } from "./doctor/checkup.ts";
@@ -697,7 +700,30 @@ export async function cmdAdd(args: string[]): Promise<number> {
     err(`invalid --model "${model}" — use letters, digits, and . _ : / - (start alphanumeric), e.g. claude-fable-5`);
     return 2;
   }
+  const binRaw = optValue(args, "--bin");
+  if (binRaw !== null && !isValidBin(binRaw)) {
+    err(`invalid --bin "${binRaw}" — it is interpolated into the launch command, so it must be a plain path or command name (letters, digits, and . _ / -), with no spaces, quotes, or shell metacharacters`);
+    return 2;
+  }
   const network = resolveNetworkRoot(optValue(args, "--network"));
+
+  // VALIDATE THE IDENTITY HERE — `add` is the DECLARE path, and it used to check only truthiness, so a
+  // name the bus rejects (`worker_fodfix`) was written into the SYNCED catalog and propagated to every
+  // peer machine before anything noticed. Validating at launch is too late by several machines. The
+  // network is resolved above, so the check gets its real context: the bus grammar, the socket budget
+  // for THIS network's path, and the identities already declared on it.
+  const addHost = (optValue(args, "--host") ?? shortHostname()).toLowerCase();
+  const declared = readCatalog(network).entries.map((e) => e.af.identity);
+  const idErrors = identityErrors(identity, {
+    ptyRoot: networkLayout(network).ptyRoot,
+    prefix: addHost,
+    // A re-declare of the SAME name is an overwrite, gated by --force below, not a uniqueness failure.
+    existing: declared.filter((d) => d !== identity),
+  });
+  if (idErrors.length > 0) {
+    for (const e of idErrors) err(e);
+    return 2;
+  }
 
   // DECLARE-ONLY (Nathan's piece-2 call): `convoy add` writes the agent file (declarative intent) into the
   // SYNCED catalog and does NOTHING else — no render, no launch, no bus folder, no pretrust, no persona-clone,
@@ -717,13 +743,16 @@ export async function cmdAdd(args: string[]): Promise<number> {
   }
 
   const persona = optValue(args, "--persona");
+  const supervisor = optValue(args, "--supervisor");
   const af: AgentFile = {
     identity,
     role,
-    host: optValue(args, "--host") ?? shortHostname(),
+    host: addHost,
     workspace,
     harness: harnessRaw as Harness,
     transport,
+    ...(supervisor ? { supervisor } : {}),
+    ...(binRaw ? { bin: binRaw } : {}),
     ...(model ? { model } : {}),
     ...(persona ? { persona } : {}),
     ...(hasFlag(args, "--permanent") ? { strategy: "permanent" as const } : {}),
@@ -745,6 +774,40 @@ export async function cmdAdd(args: string[]): Promise<number> {
   out(`✓ declared "${identity}" (${role}, host ${af.host})${existed ? " — REPLACED" : ""} → ${path}`);
   out(`  workspace: ${workspace}${!dir && cfg?.megarepo ? ` (a worktree off megarepo ${cfg.megarepo}, cut at launch)` : ""}`);
   out(`  NOTHING launched — the catalog is desired state. Run \`convoy up\` to reconcile + launch this host's agents (or \`convoy render ${identity}\` to materialize the overlay now).`);
+  return 0;
+}
+
+/** `convoy rename <old> <new>` — move the catalog entry AND the durable bus folder, leaving a tombstone. */
+export async function cmdRename(args: string[]): Promise<number> {
+  const bad = unknownFlag(args, ...flagAllowList("rename"));
+  if (bad) {
+    err(`unrecognized flag "${bad}" for \`convoy rename\`. See \`convoy --help\`.`);
+    return 2;
+  }
+  const [from, to] = positionals(args);
+  if (!from || !to) {
+    err("usage: convoy rename <old-identity> <new-identity>");
+    return 2;
+  }
+  const network = resolveNetworkRoot(optValue(args, "--network"));
+  const hostOpt = optValue(args, "--host");
+  const opts = hostOpt ? { host: hostOpt } : {};
+
+  if (hasFlag(args, "--dry-run")) {
+    out(renamePreview(network, from, to, opts));
+    const { errors } = planRename(network, from, to, opts);
+    return errors.length > 0 ? 1 : 0;
+  }
+
+  const { plan, errors, alreadyDone } = executeRename(network, from, to, opts);
+  if (errors.length > 0) {
+    for (const e of errors) err(e);
+    return 1;
+  }
+  if (alreadyDone) out(`✓ "${from}" was already renamed to "${to}" — completed the remaining steps`);
+  else out(`✓ renamed "${from}" → "${to}"`);
+  for (const n of plan.notes) out(`  · ${n}`);
+  out(`  A RUNNING session keeps its old bus id until restarted — \`convoy reload ${to}\` (or down+up) to re-materialize it.`);
   return 0;
 }
 
@@ -801,6 +864,8 @@ export async function cmdCos(args: string[]): Promise<number> {
     permanentOverride: null,
     prefix: optValue(args, "--prefix"),
     configDir: optValue(args, "--config-dir"),
+    bin: null,
+    env: null,
     model: null, // `convoy cos` (direct CoS launch) uses the harness default; per-agent --model is a `convoy add` feature
   };
   const rc = await launchSpec(spec, { dryRun, force: hasFlag(args, "--force") });
@@ -1012,7 +1077,20 @@ export function retireInCatalog(catalog: string, identity: string): { path: stri
   if (!existsSync(path) && identity.includes(".")) {
     path = agentFilePath(catalog, identity.slice(identity.indexOf(".") + 1)); // strip a leading <host>. bus prefix
   }
-  if (!existsSync(path)) return null;
+  if (!existsSync(path)) {
+    // Not at the flat path: the catalog is a TREE and identity comes from CONTENT, so a spec declaring
+    // this agent can live at any depth under any filename. Fall back to discovery rather than reporting
+    // a hand-authored (or spec-layout) agent as absent.
+    // Only TOML specs are REWRITABLE — convoy reads three formats but serializes one, so retiring a
+    // KDL/JSON spec would mean writing TOML into a `.kdl` file. Those are left for the author to edit
+    // (`retired = true`); see the write-what-you-read gap in the VRS.
+    const bare = identity.includes(".") ? identity.slice(identity.indexOf(".") + 1) : identity;
+    const found = readCatalog(dirname(catalog)).entries.find(
+      (e) => (e.af.identity === identity || e.af.identity === bare) && e.path.endsWith(".toml"),
+    );
+    if (!found) return null;
+    path = found.path;
+  }
   const af = readAgentFile(path);
   if (af.retired) return { path, already: true };
   writeAgentFile(path, { ...af, retired: true });

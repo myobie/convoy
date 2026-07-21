@@ -110,6 +110,8 @@ export const COMMANDS: readonly CommandSpec[] = [
       { name: "mcp", desc: "Shorthand for --transport mcp", kind: "bool" },
       NETWORK_FLAG,
       { name: "dir", desc: "Workspace dir", kind: "value", takesPath: true },
+      { name: "bin", desc: "Harness executable (path or command name)", kind: "value", takesPath: true },
+      { name: "supervisor", desc: "Identity this agent reports to", kind: "value" },
       PERSONA_FLAG,
       { name: "permanent", desc: "Always-on member", kind: "bool" },
       DRY_RUN_FLAG,
@@ -183,6 +185,14 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "remove",
     desc: "Remove an agent (retire it in the catalog)",
     flags: [DRY_RUN_FLAG, NETWORK_FLAG],
+    positional: IDENTITY_POSITIONAL,
+  },
+  {
+    name: "rename",
+    desc: "Rename an agent — moves the catalog entry and the durable bus folder, leaving a tombstone",
+    flags: [DRY_RUN_FLAG, NETWORK_FLAG, { name: "host", desc: "Owning host (default: this machine)", kind: "value" }],
+    // Two positionals (`<old> <new>`), but only the first is completable: the second is a name the user
+    // is inventing. The table models one positional, so it describes the old identity.
     positional: IDENTITY_POSITIONAL,
   },
   {

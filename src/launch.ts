@@ -14,6 +14,7 @@ import { busAgentId, resolvedPersonaPath, sessionId, specPermanent, specPermissi
 import type { Role } from "./role.ts";
 import { pretrustDir, pretrustDirsCodex } from "./trust.ts";
 import { CONVOY_DIR, networkLayout, stRootOf } from "./paths.ts";
+import { counterContextRefusal } from "./identity.ts";
 
 // The pty session key is per-harness: claude → [sessions.claude], codex → [sessions.codex]. (Before,
 // this was hardcoded "claude", so `--harness codex` silently wrote a claude session — a false-harness
@@ -116,10 +117,14 @@ function hookRefs(): { stBin: string; sessionStart: string; preCompact: string; 
  *  approvals + sandbox (the parallel to claude's bypass posture). `model` (null → the harness default,
  *  today's behavior) adds `--model '<id>'` — single-quoted for `sh -c`, and the id is charset-validated
  *  upstream (isValidModel) so the quotes can't be broken out of. Both harnesses accept `--model`. */
-export function harnessCommand(harness: Harness, permissionMode: string, prompt: string, model?: string | null): string {
+export function harnessCommand(harness: Harness, permissionMode: string, prompt: string, model?: string | null, bin?: string | null): string {
   const modelFlag = model ? ` --model '${model}'` : "";
-  if (harness === "codex") return `exec codex --dangerously-bypass-approvals-and-sandbox${modelFlag} '${prompt}'`;
-  return `exec claude --permission-mode ${permissionMode}${modelFlag} '${prompt}'`;
+  // `bin` replaces ONLY the binary name; every derived flag still applies, so a wrapper inherits the
+  // correct-by-construction wiring instead of having to re-derive it. Charset-validated upstream
+  // (isValidBin) because it lands unquoted in the `sh -c` string.
+  const cmd = bin || harness;
+  if (harness === "codex") return `exec ${cmd} --dangerously-bypass-approvals-and-sandbox${modelFlag} '${prompt}'`;
+  return `exec ${cmd} --permission-mode ${permissionMode}${modelFlag} '${prompt}'`;
 }
 
 /** The ding sidecar command — pokes the agent's claude session when its bus inbox gets mail. Points at
@@ -130,6 +135,31 @@ export function harnessCommand(harness: Harness, permissionMode: string, prompt:
 export function dingCommand(busId: string, claudeSessionId: string, root?: string | null): string {
   const rootFlag = root ? ` --root ${root}` : "";
   return `st ding ${claudeSessionId} --identity ${busId}${rootFlag}`;
+}
+
+/** Provision the agent's DURABLE CONTEXT dir (`<member>/context/`) — unless the identity is a counter.
+ *
+ *  `context/now.md` is the memory a cold-booted agent reconstructs itself from, so it is only safe when
+ *  the name that addresses it means ONE agent for as long as the file exists. A `<role>-<n>` counter does
+ *  not: it re-derives per parent lifetime, so after a restart `worker-2` names a different agent and would
+ *  read its predecessor's now.md as its own memory — and act on it. That failure is silent and arrives
+ *  weeks after the naming choice, which is exactly the kind a warning does not prevent.
+ *
+ *  So the dir is REFUSED rather than warned about, and the refusal is narrow: the agent still launches and
+ *  still gets a bus folder — convoy just does not hand it a pre-made place to keep memory.
+ *
+ *  This is a strong DEFAULT, not an invariant. The dir is not convoy's to withhold: `st context write`
+ *  creates it unconditionally, so an agent that externalizes work state makes its own. What this removes
+ *  is the case where a renumbered agent finds one already waiting for it. Real enforcement belongs where
+ *  the dir is created (the bus) — see context/.delta/DELTA-005. Returns the refusal message, else null. */
+export function provisionContext(memberDir: string, identity: string): string | null {
+  const refusal = counterContextRefusal(identity);
+  if (refusal !== null) {
+    process.stderr.write(`convoy: ${refusal}\n`);
+    return refusal;
+  }
+  mkdirSync(join(memberDir, "context", "decisions"), { recursive: true });
+  return null;
 }
 
 /** Serialize the per-agent pty.toml (pty's manifest format — NOT a convoy.toml). Pins the session ids
@@ -158,13 +188,16 @@ export function writePtyToml(dir: string, spec: AgentSpec, opts?: { spawner?: st
   }
   // CLAUDE_CONFIG_DIR relocates Claude Code's whole config (auth/settings/skills) — harness session only,
   // never the ding sidecar (which is just `st ding` and doesn't read it).
-  const harnessEnv = spec.configDir ? { ...env, CLAUDE_CONFIG_DIR: spec.configDir } : env;
+  // Spec `env` first, derived wiring LAST: ST_AGENT/ST_ROOT/PTY_ROOT are correct-by-construction (AC-1)
+  // and a hand-written env key must never be able to repoint the agent at another bus.
+  const specEnv = spec.env ?? {};
+  const harnessEnv = { ...specEnv, ...env, ...(spec.configDir ? { CLAUDE_CONFIG_DIR: spec.configDir } : {}) };
   const doc: Record<string, unknown> = {
     prefix: harnessId,
     sessions: {
       [HARNESS_SESSION_KEY[spec.harness]]: {
         id: harnessId,
-        command: harnessCommand(spec.harness, specPermissionMode(spec), bootPrompt(spec.role), spec.model),
+        command: harnessCommand(spec.harness, specPermissionMode(spec), bootPrompt(spec.role), spec.model, spec.bin),
         tags: { role: "agent", ...(permanent ? { strategy: "permanent" } : {}), ...stTag, ...agentTags },
         env: harnessEnv,
       },
@@ -370,6 +403,7 @@ export async function nativeLaunch(spec: AgentSpec): Promise<{ spawned: string[]
     const member = join(stRootOf(spec.networkRoot), busAgentId(spec));
     mkdirSync(join(member, "inbox"), { recursive: true });
     mkdirSync(join(member, "archive"), { recursive: true });
+    provisionContext(member, spec.identity);
 
     // Give the agent's workspace a home under the network's worktrees/ — a single view of everything the
     // network is working on. With no megarepo, that's a SYMLINK to the agent's repo. Best-effort +

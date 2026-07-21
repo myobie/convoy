@@ -31,6 +31,8 @@ function spec(over: Partial<AgentSpec> = {}): AgentSpec {
     prefix: null,
     configDir: null,
     model: null,
+    bin: null,
+    env: null,
     ...over,
   };
 }

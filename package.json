@@ -21,8 +21,9 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "@compoundingtech/smalltalk": "file:../smalltalk",
+    "@bgotink/kdl": "^0.4.0",
     "@compoundingtech/pty": "file:../pty",
+    "@compoundingtech/smalltalk": "file:../smalltalk",
     "smol-toml": "^1.7.0"
   }
 }
