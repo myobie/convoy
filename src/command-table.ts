@@ -199,6 +199,13 @@ export const COMMANDS: readonly CommandSpec[] = [
     positional: NETWORK_POSITIONAL,
   },
   {
+    name: "restart",
+    desc: "Safely restart the host — stop the up process (agents survive) then re-adopt them (NOT `down`)",
+    // No --network: the network is the positional, and --network is rejected (rc=2).
+    flags: [JSON_FLAG],
+    positional: NETWORK_POSITIONAL,
+  },
+  {
     name: "eval",
     desc: "Run a batch/eval cell end-to-end (spin → wait for the done-signal → grade) → machine verdict",
     flags: [

@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { down, up, type DownOptions, type UpOptions } from "./up.ts";
+import { down, restart, up, type DownOptions, type RestartOptions, type UpOptions } from "./up.ts";
 import { cmdAdd, cmdApp, cmdCos, cmdDoctor, cmdEnv, cmdInit, cmdInstallCli, cmdJob, cmdLs, cmdPersonas, cmdPretrust, cmdReload, cmdRemove, cmdRename, cmdRender, cmdRun, cmdShell, hasFlag, optValue, positionals, unknownFlag } from "./commands.ts";
 import { cmdCompletions } from "./completions.ts";
 import { cmdEval } from "./eval.ts";
@@ -80,6 +80,7 @@ export async function main(argv: string[]): Promise<void> {
     case "run": code = await cmdRun(rest); break;
     case "up": code = await cmdUp(rest); break;
     case "down": code = await cmdDown(rest); break;
+    case "restart": code = await cmdRestart(rest); break;
     case "env": code = cmdEnv(rest); break;
     case "shell": code = await cmdShell(rest); break;
     case "personas": code = await cmdPersonas(rest); break;
@@ -128,6 +129,15 @@ async function cmdDown(args: string[]): Promise<number> {
   return down(opts);
 }
 
+async function cmdRestart(args: string[]): Promise<number> {
+  const bad = rejectUnknown("restart", args);
+  if (bad !== null) return bad;
+  const opts: RestartOptions = {};
+  opts.json = hasFlag(args, "--json");
+  opts.network = positionals(args)[0];
+  return restart(opts);
+}
+
 // NOTE: `app <status>` (the Convoy.app menubar host manager) is intentionally hidden from this help
 // output + the README Commands list until the macOS app is dailyable (Nathan's call). The subcommand
 // still dispatches (see the "app" case + cmdApp); un-hide by re-adding its line here + in the README.
@@ -144,6 +154,7 @@ function printHelp(): void {
       "  run [role]     launch an AD-HOC session — NOT declared, NOT reconciled, NOT respawned, no durable context (declare it with `add` if it should survive) [--identity --harness claude|codex --model <id> --transport ding|mcp --mcp --network --dir --persona --prefix --config-dir --dry-run --force]\n" +
       "  up <network>   host a network in the foreground (TCC anchor + supervisor + flapping-cap) [--once = one-shot reconcile-and-exit (adopts live sessions, no daemon) --json]\n" +
       "  down [network] tear down the network — the ONLY path that kills sessions [--dry-run --force --json]\n" +
+      "  restart [network] SAFE restart — stop the up process (agents survive) then re-adopt them; use this, never `down` + `up` [--json]\n" +
       "  env [network]  print eval-safe exports for a network's env — `eval \"$(convoy env <net>)\"` sets ST_ROOT+PTY_ROOT [--identity <id>]\n" +
       "  shell [network] open an interactive subshell with a network's env exported (pty ls / st just work); exit to leave [--identity <id>]\n" +
       "  remove <id>    remove an agent\n" +

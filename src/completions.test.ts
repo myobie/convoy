@@ -125,9 +125,9 @@ describe("flags are scoped to the subcommand that honors them", () => {
     }
   });
 
-  it("offers --json only to ls/init/up/down and the batch verbs eval/job", () => {
+  it("offers --json only to ls/init/up/down/restart and the batch verbs eval/job", () => {
     const withJson = COMMANDS.filter((c) => (c.flags ?? []).some((f) => f.name === "json")).map((c) => c.name);
-    expect(withJson.sort()).toEqual(["down", "eval", "init", "job", "ls", "up"]);
+    expect(withJson.sort()).toEqual(["down", "eval", "init", "job", "ls", "restart", "up"]);
   });
 
   it("matches the CLI: a scoped flag is rejected where it does not apply", () => {

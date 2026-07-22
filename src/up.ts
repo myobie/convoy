@@ -762,3 +762,49 @@ export async function down(opts: DownOptions): Promise<number> {
     if (acquired) lock.release();
   }
 }
+
+export interface RestartOptions {
+  network?: string | undefined;
+  json?: boolean;
+  /** How long to wait for the running host to release the lock after the stop signal (ms). */
+  stopTimeoutMs?: number;
+}
+
+/** `convoy restart [<network>]` — the SAFE restart, and the whole reason it exists: it is NOT `convoy
+ *  down` + `convoy up`. `down` KILLS every agent (it is the only teardown), so restarting a live network
+ *  that way is the mass-outage footgun — the exact shape of the 2026-07-22 incident. `restart` instead
+ *  STOPS the host PROCESS with SIGTERM (agents keep running — the Nomad decoupling: up's signal handler
+ *  just sets `stop`, and its exit path leaves every session up), waits for it to release the host lock,
+ *  then becomes a fresh `convoy up` that RE-ADOPTS the still-running agents (reconcile skips live ones).
+ *  If no host is running, it simply starts one. */
+export async function restart(opts: RestartOptions): Promise<number> {
+  const root = resolveRoot(opts.network);
+  const lock = new HostLock(root);
+  const json = opts.json === true;
+
+  const owner = lock.liveOwner();
+  if (owner !== null) {
+    process.stderr.write(`convoy restart: stopping host pid ${owner} (agents keep running — this is NOT convoy down)…\n`);
+    try {
+      process.kill(owner, "SIGTERM"); // graceful stop → up sets `stop`, exits, keeps every session, releases the lock
+    } catch {
+      // already gone between the read and the signal — fall through to the wait, which will see it released
+    }
+    // Wait for the old host to release the lock; a fresh `up` would otherwise refuse (single-owner guard),
+    // or worse, two hosts would briefly double-supervise. Poll the lock rather than the pid so we key on
+    // the same signal `up`'s guard does.
+    const deadline = Date.now() + (opts.stopTimeoutMs ?? 15000);
+    while (Date.now() < deadline && lock.liveOwner() !== null) await sleep(100);
+    if (lock.liveOwner() !== null) {
+      process.stderr.write(`convoy restart: host pid ${owner} did not stop within the timeout — aborting so we never double-host. Stop it by hand, then \`convoy up\`.\n`);
+      return 1;
+    }
+    process.stderr.write(`convoy restart: host stopped; re-adopting the running agents…\n`);
+  } else {
+    process.stderr.write(`convoy restart: no host is running — starting a fresh one.\n`);
+  }
+
+  // Become the new foreground host. It re-adopts the still-running sessions (the reconcile skips live
+  // ones — `if (!gone(s)) continue`) and, per the fresh-supervisor un-park, restores any parked members.
+  return up({ network: opts.network, json });
+}
