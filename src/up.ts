@@ -11,6 +11,7 @@ import { defaultConvoyNetwork, isNetworkName, networkDirForName, networkDirOfStR
 import {
   classify,
   classifyFailedAttempt,
+  clearParkForFreshSupervisor,
   effectiveLimit,
   effectiveWindow,
   isFlapping,
@@ -358,6 +359,33 @@ export async function up(opts: UpOptions): Promise<number> {
   const thisHost = shortHostname(); // the catalog host-filter key — up only launches/adopts agents whose host is us
   const notify = opts.notify ?? [];
   const dingTargets = (crashed: SupervisedSession, sessions: readonly SupervisedSession[]): string[] => crashDingTargets(crashed, sessions, notify, busIdOf);
+
+  // FRESH-SUPERVISOR UN-PARK (parking-recovery, 2026-07-22). A foreground `convoy up` is a DELIBERATE
+  // bring-up — after a mass outage it MUST restore the FULL fleet, not inherit a prior supervisor's
+  // give-up. `strategy.status=flapping` + the fast-fail counter persist to each session's tags, so a
+  // parked agent stays parked across a restart (classify's `isFlapping → skip`), and a bring-up brought
+  // back only part of the fleet — the rest had to be hand-launched. So, ONCE at startup, clear the park
+  // and zero the counter for permanent members (regardless of prior fail count); the cap re-accrues
+  // tick-to-tick within THIS supervisor's watch. A fully-gone parked agent (no session record left) is
+  // relaunched by the catalog pass instead — this handles the gone-but-recorded ones the cap would skip.
+  //
+  // `--once` (the shepherd cron) SKIPS this: it runs every few minutes, so un-parking there would
+  // relaunch a genuinely broken agent every tick. Parking must stay durable across `--once`.
+  if (opts.once !== true) {
+    const startupNow = new Date();
+    for (const s of await host.sessions()) {
+      if (!isPermanent(s)) continue;
+      const cleared = clearParkForFreshSupervisor(parseStrategyTags(s.tags));
+      if (!cleared) continue;
+      host.removeTag(s.name, TAG.status); // updateTags MERGES — the park must be removed, not just overwritten
+      host.setTags(s.name, writtenTags(cleared)); // consecutive-fast-fails → 0
+      state.set(s.name, cleared);
+      emit(
+        { type: "unpark", identity: logicalId(s), session: s.name, ts: isoString(startupNow) },
+        `[convoy-up] fresh supervisor — cleared parked/flapping state for ${logicalId(s)} session=${s.name}; giving it a fresh cap budget`,
+      );
+    }
+  }
 
   const tick = async (): Promise<void> => {
     const now = new Date();

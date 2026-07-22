@@ -151,6 +151,29 @@ export function classifyFailedAttempt(input: {
   return { kind: "respawn", tags: { ...tags, lastRespawnAt: now, consecutiveFastFails: nextCounter, commandHash: currentHash, status: null } };
 }
 
+/** A fresh FOREGROUND supervisor gives every member a clean cap budget (convoy parking-recovery, 2026-07-22).
+ *
+ * The bug this fixes: `strategy.status=flapping` and the fast-fail counter PERSIST to the session's tags
+ * (the on-disk supervision contract), so they outlive the supervisor that wrote them. A mass outage drives
+ * the cap to its limit → the agents park → and then a FRESH `convoy up`, reading those stale tags, hits the
+ * `isFlapping(...) → skip` gate in `classify` and NEVER relaunches them. The reconstructed incident: a
+ * bring-up after an outage brought back only some of the fleet; the rest stayed parked from a prior
+ * supervisor's give-up and had to be hand-launched.
+ *
+ * A foreground `convoy up` is a DELIBERATE bring-up — the operator gesture that says "restore the fleet" —
+ * so it must not inherit a prior supervisor's verdict. This clears the park (status) AND zeroes the counter,
+ * regardless of prior fail count, giving each member a fresh budget; the cap still re-accrues tick-to-tick
+ * WITHIN this supervisor's watch (the real crash-loop protection). Returns the reset tags, or null when
+ * nothing needs clearing (not parked, counter already 0) so the caller writes no tag needlessly.
+ *
+ * The `--once` shepherd cron does NOT call this: it runs every few minutes, so un-parking there would
+ * relaunch a genuinely broken agent on every tick — parking MUST stay durable across `--once`. This
+ * reset is scoped to the rare, intentional foreground bring-up. Pure → unit-testable. */
+export function clearParkForFreshSupervisor(tags: StrategyTags): StrategyTags | null {
+  if (tags.status !== FLAPPING_STATUS && tags.consecutiveFastFails === 0) return null;
+  return { ...tags, status: null, consecutiveFastFails: 0 };
+}
+
 /** Classify one permanent-and-gone session (spec §5.3). Pure: same inputs → same decision. */
 export function classify(input: {
   session: string;

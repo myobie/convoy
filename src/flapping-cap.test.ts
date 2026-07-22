@@ -5,6 +5,7 @@ import { describe, it, expect } from "vitest";
 import {
   classify,
   classifyFailedAttempt,
+  clearParkForFreshSupervisor,
   commandFingerprint,
   FLAPPING_STATUS,
   effectiveLimit,
@@ -195,5 +196,44 @@ describe("classifyFailedAttempt — a recovery attempt that never produced a lea
     // Parked state is byte-identical in shape to a crash-loop park, so `--rm strategy.status` clears either.
     const parked = runFailed(tags({ consecutiveFastFails: LIMIT - 1 }));
     if (parked.kind === "flap") expect(writtenTags(parked.tags)[TAG.status]).toBe(FLAPPING_STATUS);
+  });
+});
+
+describe("clearParkForFreshSupervisor — a fresh foreground `convoy up` restores the FULL fleet (parking-recovery)", () => {
+  it("ACCEPTANCE: a PARKED member is un-parked — status cleared AND the counter zeroed (relaunchable again)", () => {
+    // The reproduced bug: an outage drives the cap to its limit → the agent parks → and a fresh supervisor,
+    // reading the persisted `status=flapping`, would `skip` it forever. A deliberate bring-up must not inherit
+    // that. Both fields reset: clearing status alone is not enough — a counter still at the cap re-parks on
+    // the very next fast fail.
+    const cleared = clearParkForFreshSupervisor(tags({ status: FLAPPING_STATUS, consecutiveFastFails: LIMIT }));
+    expect(cleared).not.toBeNull();
+    expect(cleared?.status).toBeNull();
+    expect(cleared?.consecutiveFastFails).toBe(0);
+  });
+
+  it("resets a NON-parked member with prior fails too — 'regardless of prior fail count' (Nathan mandate)", () => {
+    const cleared = clearParkForFreshSupervisor(tags({ status: null, consecutiveFastFails: LIMIT - 1 }));
+    expect(cleared?.consecutiveFastFails).toBe(0);
+    expect(cleared?.status).toBeNull();
+  });
+
+  it("is a NO-OP for a clean member (no park, counter 0) — the caller writes no tag needlessly", () => {
+    expect(clearParkForFreshSupervisor(tags({ status: null, consecutiveFastFails: 0 }))).toBeNull();
+  });
+
+  it("preserves the rest of the strategy state — only status + counter are touched", () => {
+    const before = tags({ status: FLAPPING_STATUS, consecutiveFastFails: LIMIT, commandHash: HASH_A, lastRespawnAt: at(500), fastFailLimitOverride: 5, fastFailWindowOverride: 120 });
+    const cleared = clearParkForFreshSupervisor(before);
+    expect(cleared?.commandHash).toBe(HASH_A);
+    expect(cleared?.lastRespawnAt).toEqual(at(500));
+    expect(cleared?.fastFailLimitOverride).toBe(5);
+    expect(cleared?.fastFailWindowOverride).toBe(120);
+  });
+
+  it("the written tags drop the park status and carry a zeroed counter (what up() persists to disk)", () => {
+    const cleared = clearParkForFreshSupervisor(tags({ status: FLAPPING_STATUS, consecutiveFastFails: LIMIT }));
+    const written = writtenTags(cleared!);
+    expect(written[TAG.status]).toBeUndefined(); // no park written — up() also REMOVES the on-disk status tag
+    expect(written[TAG.consecutive]).toBe("0");
   });
 });
