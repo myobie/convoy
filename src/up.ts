@@ -667,6 +667,21 @@ export interface DownOptions {
   force?: boolean;
 }
 
+/** Would `convoy down` kill the session the CALLER is running in? A `convoy down` typed at an agent's OWN
+ *  REPL (or a script in its shell) tears down the network it lives in — severing the session mid-command,
+ *  the exact anti-pattern behind the 2026-07-22 outage. The caller's identity is its `ST_AGENT` (convoy
+ *  bakes it into every session's env); a self-sever is when that id matches a to-be-killed session's bus
+ *  id. A null/empty `selfId` (a plain human terminal) is never a self-sever. Returns the matched session
+ *  (so the warning can name it) or null. `resolve` is injectable for tests. Pure. */
+export function selfSeverSession(
+  agents: readonly SupervisedSession[],
+  selfId: string | null | undefined,
+  resolve: (s: SupervisedSession) => string | null = busIdOf,
+): SupervisedSession | null {
+  if (!selfId) return null;
+  return agents.find((s) => resolve(s) === selfId) ?? null;
+}
+
 /** `convoy down [<network>]` — explicit teardown; the ONLY path that kills sessions. Mirror of the
  *  Nomad model: stopping `convoy up` DETACHES (agents keep running), `convoy down` TEARS DOWN. Scope
  *  is convoy's own agents (sessions spawned from a pty.toml — the `ptyfile.session` tag), so it never
@@ -702,6 +717,21 @@ export async function down(opts: DownOptions): Promise<number> {
     if (json) out(JSON.stringify({ type: "down", network: root, dryRun: true, planned: agents.length, sessions: agents.map((s) => ({ id: logicalId(s), session: s.name })) }));
     else out(`\n✓ Dry run only. Re-run without --dry-run to tear down.`);
     return 0;
+  }
+
+  // SELF-SEVER GUARD — `convoy down` typed from INSIDE a session it would kill severs the caller
+  // mid-command (an agent tearing down the network it lives in — the shape that turned the 2026-07-22
+  // restart into a fleet-wide outage). The caller's identity is ST_AGENT (convoy bakes it into every
+  // session's env); if it names a session in the kill list, refuse unless --force (a deliberate "take me
+  // down too"). The read-only dry-run above still previews from within — only the real teardown is gated.
+  const self = selfSeverSession(agents, process.env["ST_AGENT"]);
+  if (self !== null && opts.force !== true) {
+    process.stderr.write(
+      `convoy down: refusing — you are running INSIDE ${logicalId(self)} (${self.name}), a session this would kill.\n` +
+        `Tearing down your own network from within severs THIS session mid-command. Run \`convoy down\` from OUTSIDE the\n` +
+        `network (a plain terminal / another host), or \`convoy down --force\` to take yourself down too.\n`,
+    );
+    return 1;
   }
 
   // Real teardown — a live `convoy up`/app host would RESPAWN gone permanent sessions (reconcile:
